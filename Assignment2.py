@@ -1,3 +1,4 @@
+from json import load
 import os
 import time
 import boto3
@@ -48,9 +49,9 @@ def subproc(cmd, pass_str, err_str, sleep_dur, output=None):
 # Create master web server - done
 # Make into template - done
 # Create security groups in vpc - done
-# Create instance from template into subnet
-# Create elastic load balancer
-# Create launch config based on custom template
+# Create instance from template into subnet - done
+# Create launch config based on custom template - done
+# Create elastic load balancer and listeners
 # Create an auto scaling group
 # Configure dynamic scaling policies based on cloudwatch alarms
 # Test traffic to load balancer
@@ -58,6 +59,8 @@ def subproc(cmd, pass_str, err_str, sleep_dur, output=None):
 region = "eu-west-1"
 ec2_resource = boto3.resource("ec2")
 ec2_client = boto3.client("ec2")
+auto_client = boto3.client('autoscaling')
+load_client = boto3.client("elbv2")
 
 string_list = list()
 grp_id = list()
@@ -531,6 +534,7 @@ try:
     created_instance.reload()
     created_instance.wait_until_running()
     public_ip = created_instance.public_ip_address
+    time.sleep(180)
 except:
     pretty_print("Could not create ec2 instance")
 
@@ -547,34 +551,30 @@ except:
 image_response = ec2_client.create_image(
     Description=sec_grp,
     InstanceId=created_instance.id,
-    Name=sec_grp
-)
-snapshot_response=ec2_client.describe_snapshots(OwnerIds=['self'])
-print(snapshot_response)
-describe_response = ec2_client.describe_images(ImageIds=[image_response['ImageId']])
-print(describe_response)
-register_response = ec2_client.register_image(
     Name=sec_grp,
-    ImageLocation='778769697098/assignment_two',
-    Architecture='x86_64',
-    RootDeviceName='/dev/xvda',
-    EnaSupport=True,
-    SriovNetSupport='simple',
-    VirtualizationType='hvm',
     BlockDeviceMappings=[
         {
             'DeviceName': '/dev/xvda',
             'Ebs': {
                 'DeleteOnTermination': True,
+                'VolumeSize': 8,
                 'VolumeType': 'gp2',
                 'Encrypted': False
-            }
-        }
-    ]
-
+            },
+        'DeviceName': '/dev/xvda',
+            'Ebs':{},
+        'NoDevice': '', 
+        },
+    ],
 )
-print(register_response)
-image_id = image_response['ImageId']
+image_id=image_response['ImageId']
+image_waiter = ec2_client.get_waiter('image_exists')
+image_waiter.wait(ImageIds=[image_id])
+img_waiter = ec2_client.get_waiter('image_available')
+img_waiter.wait(ImageIds=[image_id])
+describe_response = ec2_client.describe_images(ImageIds=[image_response['ImageId']])
+print(describe_response)
+
 
 term_response = ec2_client.terminate_instances(
     InstanceIds=[created_instance.id]
@@ -810,8 +810,38 @@ webserv_subnet = ec2_resource.create_instances(
     SecurityGroupIds=[sg1_response['GroupId']],
     SubnetId=pub1_west1a_sub_id
 )
-webserv_subnet = create_response[0]
-webserv_subnet.wait_until_running()
+print(webserv_subnet)
+webserv_waiter = ec2_client.get_waiter('instance_running')
+webserv_waiter.wait(InstanceIds=[webserv_subnet[0].id])
 pretty_print(f"Instance running")
-webserv_subnet.reload()
-webserv_subnet.wait_until_running()
+webserv_subnet[0].reload()
+webserv_subnet[0].wait_until_running()
+
+auto_user_data = '''
+#!/bin/bash
+echo "<b>Instance ID:</b> " > /var/www/html/id.html
+curl --silent http://169.254.169.254/latest/meta-data/instance-id/ >> /var/www/html/id.html
+'''
+launch_response = auto_client.create_launch_configuration(
+    LaunchConfigurationName='assign_two',
+    ImageId=image_id,
+    KeyName=key_name,
+    SecurityGroups=[sg1_response['GroupId']],
+    UserData=auto_user_data,
+    InstanceType='t2.nano',
+    InstanceMonitoring={'Enabled': True}
+)
+
+lb_response = load_client.create_load_balancer(
+    Name='assignment-two',
+    Subnets=[
+        pub1_west1a_sub_id,
+        pub2_west1b_sub_id
+    ],
+    SecurityGroups=[sg1_response['GroupId']],
+    Type='application'
+)
+load_waiter = load_client.get_waiter('load_balancer_exists')
+load_waiter.wait(Names=['assignment-two'])
+load_waiter = load_client.get_waiter('load_balancer_available')
+load_waiter.wait(Names=['assignment-two'])
