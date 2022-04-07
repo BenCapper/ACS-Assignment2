@@ -1,4 +1,3 @@
-from json import load
 import os
 import time
 import boto3
@@ -51,7 +50,7 @@ def subproc(cmd, pass_str, err_str, sleep_dur, output=None):
 # Create security groups in vpc - done
 # Create instance from template into subnet - done
 # Create launch config based on custom template - done
-# Create elastic load balancer and listeners
+# Create elastic load balancer - done
 # Create an auto scaling group
 # Configure dynamic scaling policies based on cloudwatch alarms
 # Test traffic to load balancer
@@ -75,6 +74,8 @@ key_response = ""
 public_ip = ""
 assign_one_key = ""
 found_key_name = ""
+sg1_response = ""
+sg2_response = ""
 
 tag = {"Key": "Name", "Value": "Master Web Server - Assign Two"}
 
@@ -99,271 +100,353 @@ curl http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC}/subn
 echo '<br>' >> index.html
 cp index.html /var/www/html/index.html"""
 
-
-vpc_response = ec2_client.create_vpc(
-    CidrBlock="10.0.0.0/16",
-    AmazonProvidedIpv6CidrBlock=False,
-    TagSpecifications=[
-        {
-           'ResourceType': 'vpc', 
-           'Tags': [
-               {
-                   'Key': 'Name',
-                   'Value': 'BenCapperVPCA2'
-               }
-           ] 
-        }
-    ]
-)
-vpc_id = vpc_response['Vpc']['VpcId']
-vpc = ec2_resource.Vpc(vpc_id)
-vpc.wait_until_available()
-print(vpc_id)
+try:
+    vpc_response = ec2_client.create_vpc(
+        CidrBlock="10.0.0.0/16",
+        AmazonProvidedIpv6CidrBlock=False,
+        TagSpecifications=[
+            {
+               'ResourceType': 'vpc', 
+               'Tags': [
+                   {
+                       'Key': 'Name',
+                       'Value': 'BenCapperVPCA2'
+                   }
+               ] 
+            }
+        ]
+    )
+    vpc_id = vpc_response['Vpc']['VpcId']
+    vpc = ec2_resource.Vpc(vpc_id)
+    vpc.wait_until_available()
+    pretty_print(f"Created VPC: {vpc_id}")
+except:
+    pretty_print(f"Could not create the VPC")
 
 # enable public dns hostname so that we can SSH into it later
-ec2_client.modify_vpc_attribute( VpcId = vpc.id , EnableDnsHostnames = { 'Value': False } )
-ec2_client.modify_vpc_attribute( VpcId = vpc.id , EnableDnsSupport = { 'Value': True } )
+try:
+    ec2_client.modify_vpc_attribute( VpcId = vpc_id , EnableDnsHostnames = { 'Value': False } )
+    pretty_print("DNS Hostnames Disabled")
+except:
+    pretty_print("Could not disable DNS Hostnames")
+
+try:
+    ec2_client.modify_vpc_attribute( VpcId = vpc_id , EnableDnsSupport = { 'Value': True } )
+    pretty_print("DNS Support Enabled")
+except:
+    pretty_print("Could not enable DNS Support")
 
 # create an internet gateway and attach it to VPC
-internetgateway = ec2_resource.create_internet_gateway()
-vpc.attach_internet_gateway(InternetGatewayId=internetgateway.id)
+try:
+    internetgateway = ec2_resource.create_internet_gateway()
+    pretty_print(f"Created Internet Gateway: {internetgateway.id}")
+except:
+    pretty_print(f"Could not create the Internet Gateway")
 
-route_response = ec2_client.describe_route_tables(
-    Filters=[
-        {
-            'Name': 'vpc-id',
-            'Values': [
-                vpc.id
-            ]
-        }
-    ]
-)
-routetable = ec2_resource.RouteTable(route_response['RouteTables'][0]['RouteTableId'])
-print(route_response['RouteTables'][0]['RouteTableId'])
+try:
+    vpc.attach_internet_gateway(InternetGatewayId=internetgateway.id)
+    pretty_print(f"Attached Internet Gateway {internetgateway.id} to VPC {vpc_id}")
+except:
+    pretty_print(f"Could not attach Internet Gateway {internetgateway.id} to VPC {vpc_id}")
 
-subnet_response = ec2_client.create_subnet(
-    TagSpecifications= [
-        {
-            'ResourceType': 'subnet',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'pub_subnet_eu_w1a'
-                }
-            ]
-        }
-    ],
-    AvailabilityZone='eu-west-1a',
-    CidrBlock='10.0.0.0/20',
-    VpcId = vpc_id,
-)
+try:
+    route_response = ec2_client.describe_route_tables(
+        Filters=[
+            {
+                'Name': 'vpc-id',
+                'Values': [
+                    vpc_id
+                ]
+            }
+        ]
+    )
+    vpc_rt = route_response['RouteTables'][0]['RouteTableId']
+    routetable = ec2_resource.RouteTable(vpc_rt)
+    pretty_print(f"Found the VPC Main Route Table: {vpc_rt}")
+except:
+    pretty_print(f"Could not find the VPC Main Route Table")
 
-
-pub1_west1a_sub_id = subnet_response['Subnet']['SubnetId']
-sub1 = ec2_client.modify_subnet_attribute(SubnetId=pub1_west1a_sub_id, MapPublicIpOnLaunch={'Value':True})
-print(pub1_west1a_sub_id)
-
+try:
+    subnet_response = ec2_client.create_subnet(
+        TagSpecifications= [
+            {
+                'ResourceType': 'subnet',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'pub_subnet_eu_w1a'
+                    }
+                ]
+            }
+        ],
+        AvailabilityZone='eu-west-1a',
+        CidrBlock='10.0.0.0/20',
+        VpcId = vpc_id,
+    )
+    pub1_west1a_sub_id = subnet_response['Subnet']['SubnetId']
+    sub1 = ec2_client.modify_subnet_attribute(SubnetId=pub1_west1a_sub_id, MapPublicIpOnLaunch={'Value':True})
+    pretty_print(f"Created Public Subnet EU-WEST-1A: {pub1_west1a_sub_id}")
+except:
+    pretty_print(f"Could not create Public Subnet EU-WEST-1A")
 
 # create a public route (ON SUBNET)
-sub1_routetable = vpc.create_route_table(
-        TagSpecifications= [
-        {
-            'ResourceType': 'route-table',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'rt_pub_subnet_eu_w1a'
-                }
-            ]
-        }
-    ]
-)
-route = sub1_routetable.create_route(
-    DestinationCidrBlock='0.0.0.0/0',
-    GatewayId=internetgateway.id,
-)
-sub1_routetable.associate_with_subnet(SubnetId=pub1_west1a_sub_id)
+try:
+    sub1_routetable = vpc.create_route_table(
+            TagSpecifications= [
+            {
+                'ResourceType': 'route-table',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'rt_pub_subnet_eu_w1a'
+                    }
+                ]
+            }
+        ]
+    )
+    rt_1_id = sub1_routetable['RouteTableId']
+    pretty_print(f"Created Route Table: {rt_1_id}")
+except:
+    pretty_print(f"Could not create the Route Table")
+
+try:
+    route = sub1_routetable.create_route(
+        DestinationCidrBlock='0.0.0.0/0',
+        GatewayId=internetgateway.id,
+    )
+    pretty_print("Created Route")
+except:
+    pretty_print("Could not create the Route")
+
+try:
+    sub1_routetable.associate_with_subnet(SubnetId=pub1_west1a_sub_id)
+    pretty_print(f"Associated Route Table {rt_1_id} with the Public Subnet EU-WEST-1A: {pub1_west1a_sub_id}")
+except:
+    pretty_print(f"Could not associate the Route Table with the Public Subnet EU-WEST-1A")
 
 #-----------------------------------------------------------------------------------------------#
 
-subnet2_response = ec2_client.create_subnet(
-    TagSpecifications= [
-        {
-            'ResourceType': 'subnet',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'pub2_subnet_eu_w1b'
-                }
-            ]
-        }
-    ],
-    AvailabilityZone='eu-west-1b',
-    CidrBlock='10.0.16.0/20',
-    VpcId = vpc_id,
-)
-
-pub2_west1b_sub_id = subnet2_response['Subnet']['SubnetId']
-sub2 = ec2_client.modify_subnet_attribute(SubnetId=pub2_west1b_sub_id, MapPublicIpOnLaunch={'Value':True})
-print(pub2_west1b_sub_id)
-
-
-sub2_routetable = vpc.create_route_table(
+try:
+    subnet2_response = ec2_client.create_subnet(
         TagSpecifications= [
-        {
-            'ResourceType': 'route-table',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'rt_pub2_subnet_eu_w1b'
-                }
-            ]
-        }
-    ]
-)
-route2 = sub2_routetable.create_route(
-    DestinationCidrBlock='0.0.0.0/0',
-    GatewayId=internetgateway.id,
-)
-sub2_routetable.associate_with_subnet(SubnetId=pub2_west1b_sub_id)
+            {
+                'ResourceType': 'subnet',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'pub2_subnet_eu_w1b'
+                    }
+                ]
+            }
+        ],
+        AvailabilityZone='eu-west-1b',
+        CidrBlock='10.0.16.0/20',
+        VpcId = vpc_id,
+    )
+    pub2_west1b_sub_id = subnet2_response['Subnet']['SubnetId']
+    sub2 = ec2_client.modify_subnet_attribute(SubnetId=pub2_west1b_sub_id, MapPublicIpOnLaunch={'Value':True})
+    pretty_print(f"Created Public Subnet EU-WEST-1B: {pub2_west1b_sub_id}")
+except:
+    pretty_print(f"Could not create the Public Subnet EU-WEST-1B")
 
+try:
+    sub2_routetable = vpc.create_route_table(
+            TagSpecifications= [
+            {
+                'ResourceType': 'route-table',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'rt_pub2_subnet_eu_w1b'
+                    }
+                ]
+            }
+        ]
+    )
+    rt_2_id = sub2_routetable['RouteTableId']
+    pretty_print(f"Created Route Table: {rt_2_id}")
+except:
+    pretty_print(f"Could not create the Route Table")
+
+try:
+    route2 = sub2_routetable.create_route(
+        DestinationCidrBlock='0.0.0.0/0',
+        GatewayId=internetgateway.id,
+    )
+    pretty_print("Created Route")
+except:
+    pretty_print("Could not create the Route")
+
+try:
+    sub2_routetable.associate_with_subnet(SubnetId=pub2_west1b_sub_id)
+    pretty_print(f"Associated Route Table {rt_2_id} with the Public Subnet EU-WEST-1B: {pub2_west1b_sub_id}")
+except:
+    pretty_print(f"Could not associate the Route Table with the Public Subnet EU-WEST-1B")
 #--------------------------------------------------------------------------#
 
-subnet3_response = ec2_client.create_subnet(
-    TagSpecifications= [
-        {
-            'ResourceType': 'subnet',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'pri_subnet_eu_w1a'
-                }
-            ]
-        }
-    ],
-    AvailabilityZone='eu-west-1a',
-    CidrBlock='10.0.128.0/20',
-    VpcId = vpc_id
-)
+try:
+    subnet3_response = ec2_client.create_subnet(
+        TagSpecifications= [
+            {
+                'ResourceType': 'subnet',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'pri_subnet_eu_w1a'
+                    }
+                ]
+            }
+        ],
+        AvailabilityZone='eu-west-1a',
+        CidrBlock='10.0.128.0/20',
+        VpcId = vpc_id
+    )
 
-pri_west1a_sub_id = subnet3_response['Subnet']['SubnetId']
-print(pri_west1a_sub_id)
-
+    pri_west1a_sub_id = subnet3_response['Subnet']['SubnetId']
+    pretty_print(f"Created Private Subnet EU-WEST-1A: {pri_west1a_sub_id}")
+except:
+    pretty_print("Could not create the Private Subnet EU-WEST-1A")
 #--------------------------------------------------------------------------#
 
-subnet4_response = ec2_client.create_subnet(
-    TagSpecifications= [
-        {
-            'ResourceType': 'subnet',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'pri2_subnet_eu_w1b'
-                }
-            ]
-        }
-    ],
-    AvailabilityZone='eu-west-1b',
-    CidrBlock='10.0.144.0/20',
-    VpcId = vpc_id
-)
-
-pri2_west1b_sub_id = subnet4_response['Subnet']['SubnetId']
-print(pri2_west1b_sub_id)
-
-
-
-
+try:
+    subnet4_response = ec2_client.create_subnet(
+        TagSpecifications= [
+            {
+                'ResourceType': 'subnet',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'pri2_subnet_eu_w1b'
+                    }
+                ]
+            }
+        ],
+        AvailabilityZone='eu-west-1b',
+        CidrBlock='10.0.144.0/20',
+        VpcId = vpc_id
+    )
+    pri2_west1b_sub_id = subnet4_response['Subnet']['SubnetId']
+    pretty_print(f"Created Private Subnet EU-WEST-1B: {pri2_west1b_sub_id}")
+except:
+    pretty_print("Could not create the Private Subnet EU-WEST-1B")
 #---------------------------------------------------------------------------#
 
-ip_response = ec2_client.allocate_address()
-pub_ip_address = ip_response['PublicIp']
-allocation_id = ip_response['AllocationId']
+try:
+    ip_response = ec2_client.allocate_address()
+    pub_ip_address = ip_response['PublicIp']
+    allocation_id = ip_response['AllocationId']
+    pretty_print(f"Allocated Ip Address: {pub_ip_address}")
+except:
+    pretty_print("Could not allocate an Ip Address (Max 5)")
 
+try:
+    nat_response = ec2_client.create_nat_gateway(
+        AllocationId=allocation_id,
+        SubnetId = pub1_west1a_sub_id,
+        ConnectivityType='public',
+        TagSpecifications=[
+            {
+                'ResourceType': 'natgateway',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'nat-public-west1a'
+                    }
+                ]
+            }
+        ]
+    )
+    nat_id=nat_response['NatGateway']['NatGatewayId']
+    pretty_print(f"Created Nat Gateway: {nat_id}")
+except:
+    pretty_print("Could not create the Nat Gateway")
 
-nat_response = ec2_client.create_nat_gateway(
-    AllocationId=allocation_id,
-    SubnetId = pub1_west1a_sub_id,
-    ConnectivityType='public',
-    TagSpecifications=[
-        {
-            'ResourceType': 'natgateway',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'nat-public-west1a'
-                }
-            ]
-        }
-    ]
-)
-nat_id=nat_response['NatGateway']['NatGatewayId']
-print(nat_id)
-waiter = ec2_client.get_waiter('nat_gateway_available')
-waiter.wait(
+try:
+    waiter = ec2_client.get_waiter('nat_gateway_available')
+    pretty_print(f"Waiting for the Nat Gateway to become available...")
+    waiter.wait(
         NatGatewayIds=[nat_id]
-)
+    )
+except:
+    pretty_print("Could not find the Nat Gateway to wait for")
 
-sub3_routetable = vpc.create_route_table(
-        TagSpecifications= [
-        {
-            'ResourceType': 'route-table',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'rt_pri_subnet_eu_w1a'
-                }
-            ]
-        }
-    ]
-)
-nat_route=sub3_routetable.create_route(
-    DestinationCidrBlock='0.0.0.0/0',
-    NatGatewayId=nat_id
-)
-sub3_routetable.associate_with_subnet(SubnetId=pri_west1a_sub_id)
-sub4_routetable = vpc.create_route_table(
-        TagSpecifications= [
-        {
-            'ResourceType': 'route-table',
-            'Tags': [
-                {
-                    'Key': 'Name',
-                    'Value': 'rt_pri2_subnet_eu_w1b'
-                }
-            ]
-        }
-    ]
-)
-nat2_route=sub4_routetable.create_route(
-    DestinationCidrBlock='0.0.0.0/0',
-    NatGatewayId=nat_id
-)
-sub4_routetable.associate_with_subnet(SubnetId=pri2_west1b_sub_id)
+try:
+    sub3_routetable = vpc.create_route_table(
+            TagSpecifications= [
+            {
+                'ResourceType': 'route-table',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'rt_pri_subnet_eu_w1a'
+                    }
+                ]
+            }
+        ]
+    )
+    rt_3_id = sub3_routetable['RouteTableId']
+    pretty_print(f"Created Route Table: {rt_3_id}")
+except:
+    pretty_print("Could not create the Route Table")
 
-endpoint_response = ec2_client.create_vpc_endpoint(
-    VpcEndpointType='Gateway',
-    VpcId=vpc.id,
-    ServiceName='com.amazonaws.eu-west-1.s3',
-    RouteTableIds=[
-        sub3_routetable.id,
-        sub4_routetable.id
-    ],
-    PrivateDnsEnabled=False,
+try:
+    nat_route=sub3_routetable.create_route(
+        DestinationCidrBlock='0.0.0.0/0',
+        NatGatewayId=nat_id
+    )
+    pretty_print("Created Route")
+except:
+    pretty_print("Could not create Route")
 
-)
+try:
+    sub3_routetable.associate_with_subnet(SubnetId=pri_west1a_sub_id)
+    pretty_print(f"Associated Route Table {rt_3_id} with the Private Subnet EU-WEST-1A: {pri_west1a_sub_id}")
+except:
+    pretty_print("Could not associate the Route Table with the Private Subnet EU-WEST-1A")
 
+try:
+    sub4_routetable = vpc.create_route_table(
+            TagSpecifications= [
+            {
+                'ResourceType': 'route-table',
+                'Tags': [
+                    {
+                        'Key': 'Name',
+                        'Value': 'rt_pri2_subnet_eu_w1b'
+                    }
+                ]
+            }
+        ]
+    )
+    rt_4_id = sub4_routetable['RouteTableId']
+    pretty_print(f"Created Route Table: {rt_4_id}")
+except:
+    pretty_print("Could not create thr Route Table")
 
+try:
+    nat2_route=sub4_routetable.create_route(
+        DestinationCidrBlock='0.0.0.0/0',
+        NatGatewayId=nat_id
+    )
+    sub4_routetable.associate_with_subnet(SubnetId=pri2_west1b_sub_id)
+    pretty_print(f"Associated Route Table {rt_4_id} with the Private Subnet EU-WEST-1B: {pri2_west1b_sub_id}")
+except:
+    pretty_print("Could not associate the Route Table with the Private Subnet EU-WEST-1B")
 
-
-print('over')
-
-
-
-
-
-
-
+try:
+    endpoint_response = ec2_client.create_vpc_endpoint(
+        VpcEndpointType='Gateway',
+        VpcId=vpc.id,
+        ServiceName='com.amazonaws.eu-west-1.s3',
+        RouteTableIds=[
+            sub3_routetable.id,
+            sub4_routetable.id
+        ],
+        PrivateDnsEnabled=False,
+    )
+    pretty_print(f"Created VPC Endpoint: {endpoint_response['VpcEndpoint']['VpcEndpointId']}")
+except:
+    pretty_print("Could not create the VPC Endpoints")
 #------------------------------------------------------------------------------#
 
 # If old log exists
@@ -521,7 +604,6 @@ try:
     create_response = ec2_resource.create_instances(
         ImageId='ami-0069d66985b09d219',
         KeyName=key_name,
-        UserData=user_data,
         InstanceType="t2.nano",
         SecurityGroupIds=grp_id,
         MinCount=1,
@@ -534,7 +616,6 @@ try:
     created_instance.reload()
     created_instance.wait_until_running()
     public_ip = created_instance.public_ip_address
-    time.sleep(180)
 except:
     pretty_print("Could not create ec2 instance")
 
@@ -548,300 +629,440 @@ except:
     pretty_print(f"Could not add tag to the instance: {tag}")
 
 
-image_response = ec2_client.create_image(
-    Description=sec_grp,
-    InstanceId=created_instance.id,
-    Name=sec_grp,
-    BlockDeviceMappings=[
-        {
+subproc(
+    f"chmod 400 {key_file_name}",
+    "Keypair permissions set",
+    "Could not set keypair permissions",
+    2,
+)
+
+
+
+command_list = "sudo yum update -y ; sudo yum install httpd -y ; sudo systemctl enable httpd ; sudo systemctl start httpd;"
+ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '{command_list}'"
+result = subproc(
+    ssh_command,
+    "Remote ssh echo completed",
+    "Remote ssh echo failed",
+    2,
+    True
+)
+print(result)
+time.sleep(30)
+
+command_list = "sudo touch index.html"
+ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '{command_list}'"
+result = subproc(
+    ssh_command,
+    "Remote ssh echo completed",
+    "Remote ssh echo failed",
+    2,
+    True
+)
+print(result)
+
+time.sleep(30)
+try:
+    image_response = ec2_client.create_image(
+        Description=sec_grp,
+        InstanceId=created_instance.id,
+        Name=sec_grp,
+        BlockDeviceMappings=[
+            {
+                'DeviceName': '/dev/xvda',
+                'Ebs': {
+                    'DeleteOnTermination': True,
+                    'VolumeSize': 8,
+                    'VolumeType': 'gp2',
+                    'Encrypted': False
+                },
             'DeviceName': '/dev/xvda',
-            'Ebs': {
-                'DeleteOnTermination': True,
-                'VolumeSize': 8,
-                'VolumeType': 'gp2',
-                'Encrypted': False
+                'Ebs':{},
+            'NoDevice': '', 
             },
-        'DeviceName': '/dev/xvda',
-            'Ebs':{},
-        'NoDevice': '', 
-        },
-    ],
-)
-image_id=image_response['ImageId']
-image_waiter = ec2_client.get_waiter('image_exists')
-image_waiter.wait(ImageIds=[image_id])
-img_waiter = ec2_client.get_waiter('image_available')
-img_waiter.wait(ImageIds=[image_id])
-describe_response = ec2_client.describe_images(ImageIds=[image_response['ImageId']])
-print(describe_response)
+        ],
+    )
+    image_id=image_response['ImageId']
+    pretty_print(f"Created AMI Image: {image_id}")
+except:
+    pretty_print("Could not create the AMI Image")
+
+try:
+    pretty_print(f"Waiting for the AMI Image {image_id} to exist")
+    image_waiter = ec2_client.get_waiter('image_exists')
+    image_waiter.wait(ImageIds=[image_id])
+except:
+    pretty_print("The AMI Image does not exist")
+
+try:
+    pretty_print(f"Waiting for the Image {image_id} to become available")
+    img_waiter = ec2_client.get_waiter('image_available')
+    img_waiter.wait(ImageIds=[image_id])
+except:
+    pretty_print("The AMI Image never became available")
+
+try:
+    describe_response = ec2_client.describe_images(ImageIds=[image_id])
+    pretty_print(f"Found the AMI image: {image_id}")
+except:
+    pretty_print("Could not find the AMI image")
 
 
-term_response = ec2_client.terminate_instances(
-    InstanceIds=[created_instance.id]
-)
+try:
+    term_response = ec2_client.terminate_instances(
+        InstanceIds=[created_instance.id]
+    )
+    pretty_print(f"Terminated the instance: {created_instance.id}")
+except:
+    pretty_print(f"Could not terminate the instance: {created_instance.id}")
 
-sg1_response = ec2_client.create_security_group(
-    Description='Allows web servers to receive internet traffic, and SSH and RDP traffic from the network.' +
-                'The web servers can also initiate read and write requests to the database servers in the private subnet, and send traffic to the internet',
-    GroupName='WebServerSG',
-    VpcId=vpc.id,
-)
-print(sg1_response)
-if sg1_response:
-    sec_ingress1_response = ec2_client.authorize_security_group_ingress(
-    GroupId=sg1_response['GroupId'],
-    IpPermissions=[
-        {
-            "FromPort": 22,
-            "ToPort": 22,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "ssh"},
-            ],
-        },
-        {
-            "FromPort": 80,
-            "ToPort": 80,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "http"},
-            ],
-        },
-        {
-            "FromPort": 443,
-            "ToPort": 443,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "https"},
-            ],
-        },
-    ],
-)
-sec1_egress_response = ec2_client.authorize_security_group_egress(
-    GroupId=sg1_response['GroupId'],
-    IpPermissions=[
-        {
-            "FromPort": 3306,
-            "ToPort": 3306,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "MYSQL/Aurora"},
-            ],
-        },
-        {
-            "FromPort": 80,
-            "ToPort": 80,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "http"},
-            ],
-        },
-        {
-            "FromPort": 443,
-            "ToPort": 443,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "https"},
-            ],
-        },
-        {
-            "FromPort": 1433,
-            "ToPort": 1433,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "MSSQL"},
-            ],
-        },
-    ],
-)
+try:
+    sg1_response = ec2_client.create_security_group(
+        Description='Allows web servers to receive internet traffic, and SSH and RDP traffic from the network.' +
+                    'The web servers can also initiate read and write requests to the database servers in the private subnet, and send traffic to the internet',
+        GroupName='WebServerSG',
+        VpcId=vpc.id,
+    )
+    pretty_print(f"Created the Web Server Security Group: {sg1_response['GroupId']}")
+except:
+    pretty_print("Could not create the Web Server Security Group")
 
-sg2_response = ec2_client.create_security_group(
-    Description='allow read or write database requests from the web servers. The database servers can also initiate traffic bound for the internet',
-    GroupName='DBServerSG',
-    VpcId=vpc.id,
-)
-if sg2_response:
+
+if sg1_response != "":
+    try:
+        sec_ingress1_response = ec2_client.authorize_security_group_ingress(
+        GroupId=sg1_response['GroupId'],
+        IpPermissions=[
+            {
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpProtocol": "tcp",
+                "IpRanges": [
+                    {"CidrIp": "0.0.0.0/0", "Description": "ssh"},
+                ],
+            },
+            {
+                "FromPort": 80,
+                "ToPort": 80,
+                "IpProtocol": "tcp",
+                "IpRanges": [
+                    {"CidrIp": "0.0.0.0/0", "Description": "http"},
+                ],
+            },
+            {
+                "FromPort": 443,
+                "ToPort": 443,
+                "IpProtocol": "tcp",
+                "IpRanges": [
+                    {"CidrIp": "0.0.0.0/0", "Description": "https"},
+                ],
+            },
+        ],
+        )
+        pretty_print(f"Authorized Web Server Security Group inbound rules")
+    except:
+        pretty_print("Could not authorize Web Server Security Group inbound rules")
+
+    try:
+        sec1_egress_response = ec2_client.authorize_security_group_egress(
+            GroupId=sg1_response['GroupId'],
+            IpPermissions=[
+                {
+                    "FromPort": 3306,
+                    "ToPort": 3306,
+                    "IpProtocol": "tcp",
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": "MYSQL/Aurora"},
+                    ],
+                },
+                {
+                    "FromPort": 80,
+                    "ToPort": 80,
+                    "IpProtocol": "tcp",
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": "http"},
+                    ],
+                },
+                {
+                    "FromPort": 443,
+                    "ToPort": 443,
+                    "IpProtocol": "tcp",
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": "https"},
+                    ],
+                },
+                {
+                    "FromPort": 1433,
+                    "ToPort": 1433,
+                    "IpProtocol": "tcp",
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": "MSSQL"},
+                    ],
+                },
+            ],
+        )
+        pretty_print(f"Authorized Web Server Security Group outbound rules")
+    except:
+        pretty_print("Could not authorize Web Server Security Group outbound rules")
+
+try:
+    sg2_response = ec2_client.create_security_group(
+        Description='allow read or write database requests from the web servers. The database servers can also initiate traffic bound for the internet',
+        GroupName='DBServerSG',
+        VpcId=vpc.id,
+    )
+    pretty_print(f"Created the DB Server Security Group: {sg2_response['GroupId']}")
+except:
+    pretty_print("Could not create the DB Server Security Group")
+
+if sg2_response != "":
+    try:
+        sec2_ingress_response = ec2_client.authorize_security_group_ingress(
+        GroupId=sg2_response['GroupId'],
+        IpPermissions=[
+            {
+                "FromPort": 22,
+                "ToPort": 22,
+                "IpProtocol": "tcp",
+                "IpRanges": [
+                    {"CidrIp": "0.0.0.0/0", "Description": "ssh"},
+                ],
+            },
+            {
+                "FromPort": 1433,
+                "ToPort": 1433,
+                "IpProtocol": "tcp",
+                "IpRanges": [
+                    {"CidrIp": "0.0.0.0/0", "Description": "MSSQL"},
+                ],
+            },
+            {
+                "FromPort": 3306,
+                "ToPort": 3306,
+                "IpProtocol": "tcp",
+                "IpRanges": [
+                    {"CidrIp": "0.0.0.0/0", "Description": "MYSQL/Aurora"},
+                ],
+            },
+        ],
+        )
+        pretty_print(f"Authorized DB Server Security Group inbound rules")
+    except:
+        pretty_print("Could not authorize DB Server Security Group inbound rules")
+
+    try:
+        sec2_egress_response = ec2_client.authorize_security_group_egress(
+            GroupId=sg2_response['GroupId'],
+            IpPermissions=[
+                {
+                    "FromPort": 443,
+                    "ToPort": 443,
+                    "IpProtocol": "tcp",
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": "HTTPS"},
+                    ],
+                },
+                {
+                    "FromPort": 80,
+                    "ToPort": 80,
+                    "IpProtocol": "tcp",
+                    "IpRanges": [
+                        {"CidrIp": "0.0.0.0/0", "Description": "http"},
+                    ],
+                },
+            ],
+        )
+        pretty_print(f"Authorized DB Server Security Group outbound rules")
+    except:
+        pretty_print("Could not authorize DB Server Security Group outbound rules")
+
+try:
+    sec1_egress_response = ec2_client.authorize_security_group_egress(
+        GroupId=sg1_response['GroupId'],
+        IpPermissions=[
+            {
+                'IpProtocol': '-1',
+                'UserIdGroupPairs': [
+                    {
+                        'GroupId': sg2_response['GroupId'],
+                        'VpcId': vpc.id,
+                    }
+                ]
+            }
+        ]
+    )
+    pretty_print(f"Authorized Web Server Security Group outbound rules from DB Server")
+except:
+    pretty_print(f"Could not authorize Web Server Security Group outbound rules from DB Server")
+
+try:
+    revoke_response = ec2_client.revoke_security_group_egress(
+        GroupId=sg1_response['GroupId'],
+        IpPermissions=[
+            {
+                'IpProtocol': '-1',
+                'IpRanges': [
+                    {
+                        'CidrIp': '0.0.0.0/0'
+                    }
+                ]
+            }
+        ]
+    )
+    pretty_print("Revoked an unruly outbound rule from Web Server Security Group")
+except:
+    pretty_print("Could not revoke an unruly outbound rule from Web Server Security Group")
+
+
+try:
     sec2_ingress_response = ec2_client.authorize_security_group_ingress(
-    GroupId=sg2_response['GroupId'],
-    IpPermissions=[
-        {
-            "FromPort": 22,
-            "ToPort": 22,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "ssh"},
-            ],
-        },
-        {
-            "FromPort": 1433,
-            "ToPort": 1433,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "MSSQL"},
-            ],
-        },
-        {
-            "FromPort": 3306,
-            "ToPort": 3306,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "MYSQL/Aurora"},
-            ],
-        },
-    ],
-)
-sec2_egress_response = ec2_client.authorize_security_group_egress(
-    GroupId=sg2_response['GroupId'],
-    IpPermissions=[
-        {
-            "FromPort": 443,
-            "ToPort": 443,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "HTTPS"},
-            ],
-        },
-        {
-            "FromPort": 80,
-            "ToPort": 80,
-            "IpProtocol": "tcp",
-            "IpRanges": [
-                {"CidrIp": "0.0.0.0/0", "Description": "http"},
-            ],
-        },
-    ],
-)
+        GroupId=sg1_response['GroupId'],
+        IpPermissions=[
+            {
+                'IpProtocol': '-1',
+                'UserIdGroupPairs': [
+                    {
+                        'GroupId': sg2_response['GroupId'],
+                        'VpcId': vpc.id,
+                    }
+                ]
+            }
+        ]
+    )
+    pretty_print("Authorized Web Server Security Group inbound rules from DB Server")
+except:
+    pretty_print("Could not authorize Web Server Security Group inbound rules from DB Server")
 
-sec1_egress_response = ec2_client.authorize_security_group_egress(
-    GroupId=sg1_response['GroupId'],
-    IpPermissions=[
-        {
-            'IpProtocol': '-1',
-            'UserIdGroupPairs': [
-                {
-                    'GroupId': sg2_response['GroupId'],
-                    'VpcId': vpc.id,
-                }
-            ]
-        }
-    ]
-)
+try:
+    egress_response = ec2_client.authorize_security_group_egress(
+        GroupId=sg2_response['GroupId'],
+        IpPermissions=[
+            {
+                'IpProtocol': '-1',
+                'UserIdGroupPairs': [
+                    {
+                        'GroupId': sg1_response['GroupId'],
+                        'VpcId': vpc.id,
+                    }
+                ]
+            }
+        ]
+    )
+    pretty_print("Authorized DB Server Security Group outbound rules from Web Server")
+except:
+    pretty_print("Could not authorize DB Server Security Group outbound rules from Web Server")
 
-revoke_response = ec2_client.revoke_security_group_egress(
-    GroupId=sg1_response['GroupId'],
-    IpPermissions=[
-        {
-            'IpProtocol': '-1',
-            'IpRanges': [
-                {
-                    'CidrIp': '0.0.0.0/0'
-                }
-            ]
-        }
-    ]
-)
+try:
+    revoke_response = ec2_client.revoke_security_group_egress(
+        GroupId=sg2_response['GroupId'],
+        IpPermissions=[
+            {
+                'IpProtocol': '-1',
+                'IpRanges': [
+                    {
+                        'CidrIp': '0.0.0.0/0'
+                    }
+                ]
+            }
+        ]
+    )
+    pretty_print("Revoked an unruly outbound rule from DB Server Security Group")
+except:
+    pretty_print("Could not revoke an unruly outbound rule from DB Server Security Group")
 
-sec2_ingress_response = ec2_client.authorize_security_group_ingress(
-    GroupId=sg1_response['GroupId'],
-    IpPermissions=[
-        {
-            'IpProtocol': '-1',
-            'UserIdGroupPairs': [
-                {
-                    'GroupId': sg2_response['GroupId'],
-                    'VpcId': vpc.id,
-                }
-            ]
-        }
-    ]
-)
+try:
+    ingress_response = ec2_client.authorize_security_group_ingress(
+        GroupId=sg2_response['GroupId'],
+        IpPermissions=[
+            {
+                'IpProtocol': '-1',
+                'UserIdGroupPairs': [
+                    {
+                        'GroupId': sg1_response['GroupId'],
+                        'VpcId': vpc.id,
+                    }
+                ]
+            }
+        ]
+    )
+    pretty_print("Authorized DB Server Security Group inbound rules from Web Server")
+except:
+    pretty_print("Could not authorize DB Server Security Group inbound rules from Web Server")
 
-egress_response = ec2_client.authorize_security_group_egress(
-    GroupId=sg2_response['GroupId'],
-    IpPermissions=[
-        {
-            'IpProtocol': '-1',
-            'UserIdGroupPairs': [
-                {
-                    'GroupId': sg1_response['GroupId'],
-                    'VpcId': vpc.id,
-                }
-            ]
-        }
-    ]
-)
+try:
+    webserv_subnet = ec2_resource.create_instances(
+        ImageId=image_id,
+        KeyName=key_name,
+        MaxCount=1,
+        MinCount=1,
+        Monitoring={'Enabled': True},
+        InstanceType='t2.nano',
+        SecurityGroupIds=[sg1_response['GroupId']],
+        SubnetId=pub1_west1a_sub_id
+    )
+    webserv_id = webserv_subnet[0].id
+    pretty_print(f"Created instance in Subnet {pub1_west1a_sub_id} from the image {image_id}")
+except:
+    pretty_print("Could not create the instance")
 
-revoke_response = ec2_client.revoke_security_group_egress(
-    GroupId=sg2_response['GroupId'],
-    IpPermissions=[
-        {
-            'IpProtocol': '-1',
-            'IpRanges': [
-                {
-                    'CidrIp': '0.0.0.0/0'
-                }
-            ]
-        }
-    ]
-)
+try:
+    webserv_waiter = ec2_client.get_waiter('instance_running')
+    pretty_print("Waiting for the instance to become available")
+    webserv_waiter.wait(InstanceIds=[webserv_id])
+except:
+    pretty_print("Could not find the instance to wait for")
 
-ingress_response = ec2_client.authorize_security_group_ingress(
-    GroupId=sg2_response['GroupId'],
-    IpPermissions=[
-        {
-            'IpProtocol': '-1',
-            'UserIdGroupPairs': [
-                {
-                    'GroupId': sg1_response['GroupId'],
-                    'VpcId': vpc.id,
-                }
-            ]
-        }
-    ]
-)
-
-webserv_subnet = ec2_resource.create_instances(
-    ImageId=image_id,
-    KeyName=key_name,
-    MaxCount=1,
-    MinCount=1,
-    Monitoring={'Enabled': True},
-    InstanceType='t2.nano',
-    SecurityGroupIds=[sg1_response['GroupId']],
-    SubnetId=pub1_west1a_sub_id
-)
-print(webserv_subnet)
-webserv_waiter = ec2_client.get_waiter('instance_running')
-webserv_waiter.wait(InstanceIds=[webserv_subnet[0].id])
-pretty_print(f"Instance running")
-webserv_subnet[0].reload()
-webserv_subnet[0].wait_until_running()
+try:
+    webserv_subnet[0].reload()
+    webserv_subnet[0].wait_until_running()
+    pretty_print(f"Instance running")
+except:
+    pretty_print("Could not start the instance")
 
 auto_user_data = '''
 #!/bin/bash
 echo "<b>Instance ID:</b> " > /var/www/html/id.html
 curl --silent http://169.254.169.254/latest/meta-data/instance-id/ >> /var/www/html/id.html
 '''
-launch_response = auto_client.create_launch_configuration(
-    LaunchConfigurationName='assign_two',
-    ImageId=image_id,
-    KeyName=key_name,
-    SecurityGroups=[sg1_response['GroupId']],
-    UserData=auto_user_data,
-    InstanceType='t2.nano',
-    InstanceMonitoring={'Enabled': True}
-)
 
-lb_response = load_client.create_load_balancer(
-    Name='assignment-two',
-    Subnets=[
-        pub1_west1a_sub_id,
-        pub2_west1b_sub_id
-    ],
-    SecurityGroups=[sg1_response['GroupId']],
-    Type='application'
-)
-load_waiter = load_client.get_waiter('load_balancer_exists')
-load_waiter.wait(Names=['assignment-two'])
-load_waiter = load_client.get_waiter('load_balancer_available')
-load_waiter.wait(Names=['assignment-two'])
+try:
+    launch_response = auto_client.create_launch_configuration(
+        LaunchConfigurationName='assign_two',
+        ImageId=image_id,
+        KeyName=key_name,
+        SecurityGroups=[sg1_response['GroupId']],
+        UserData=auto_user_data,
+        InstanceType='t2.nano',
+        InstanceMonitoring={'Enabled': True}
+    )
+    pretty_print("Created the Launch Configuration")
+except:
+    pretty_print("Could not create the Launch Configuration")
+
+try:
+    lb_response = load_client.create_load_balancer(
+        Name='assignment-two',
+        Subnets=[
+            pub1_west1a_sub_id,
+            pub2_west1b_sub_id
+        ],
+        SecurityGroups=[sg1_response['GroupId']],
+        Type='application'
+    )
+    pretty_print(f"Created Application Load Balancer in Public Subnets {pub1_west1a_sub_id} and {pub2_west1b_sub_id}")
+except:
+    pretty_print("Could not create the Application Load Balancer")
+
+try:
+    load_waiter = load_client.get_waiter('load_balancer_exists')
+    pretty_print("Waiting for the Load Balancer to exist")
+    load_waiter.wait(Names=['assignment-two'])
+except:
+    pretty_print("Could not find the Load Balancer")
+
+try:
+    load_waiter = load_client.get_waiter('load_balancer_available')
+    pretty_print("Waiting for the Load Balancer to become available")
+    load_waiter.wait(Names=['assignment-two'])
+except:
+    pretty_print("Could not find the Load Balancer")
