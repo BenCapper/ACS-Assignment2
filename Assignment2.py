@@ -46,12 +46,13 @@ def subproc(cmd, pass_str, err_str, sleep_dur, output=None):
 
 # Create VPC - done
 # Create master web server - done
-# Make into template - done
+# Make into image - done
 # Create security groups in vpc - done
 # Create instance from template into subnet - done
 # Create launch config based on custom template - done
 # Create elastic load balancer - done
 # Create an auto scaling group
+# Create open SSL Cert and LB listener
 # Configure dynamic scaling policies based on cloudwatch alarms
 # Test traffic to load balancer
 
@@ -68,39 +69,37 @@ key_file_name = "assign_two.pem"
 sec_grp = "assignment_two"
 log_name = "log.txt"
 index_file = "index.html"
-ami_resp = ""
 key_name = ""
 key_response = ""
 public_ip = ""
 assign_one_key = ""
 found_key_name = ""
+vpc_id = ""
 sg1_response = ""
 sg2_response = ""
+rt_1_id = ""
+rt_2_id = ""
+rt_3_id = ""
+rt_4_id = ""
+sub1_routetable= ""
+sub2_routetable= ""
+sub3_routetable= ""
+sub4_routetable= ""
+pub_west1a_sub_id= ""
+pub2_west1b_sub_id= ""
+pri_west1a_sub_id= ""
+pri2_west1b_sub_id= ""
 
 tag = {"Key": "Name", "Value": "Master Web Server - Assign Two"}
 
-user_data = """
-#!/bin/bash
-yum update -y
-yum install httpd -y
-systemctl enable httpd
-systemctl start httpd
-systemctl start sshd.service
-systemctl start ssh.service
-echo '<html>' > index.html
-echo 'Private IP address: ' >> index.html
-curl http://169.254.169.254/latest/meta-data/local-ipv4 >> index.html
-echo '<br>' >> index.html
-echo 'Availability Zone: ' >> index.html
-curl http://169.254.169.254/latest/meta-data/placement/availability-zone >> index.html
-echo '<br>' >> index.html
-echo 'Subnet: ' >> index.html
-MAC=$(curl http://169.254.169.254/latest/meta-data/mac)
-curl http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC}/subnet-id >> index.html
-echo '<br>' >> index.html
-cp index.html /var/www/html/index.html"""
+# If old log exists
+if os.path.exists(log_name):
+    # Delete
+    subproc(f"rm -f {log_name}", "Deleted old log file", "No old log file found", 1)
+
 
 try:
+    sleep(1)
     vpc_response = ec2_client.create_vpc(
         CidrBlock="10.0.0.0/16",
         AmazonProvidedIpv6CidrBlock=False,
@@ -125,12 +124,14 @@ except:
 
 # enable public dns hostname so that we can SSH into it later
 try:
-    ec2_client.modify_vpc_attribute( VpcId = vpc_id , EnableDnsHostnames = { 'Value': False } )
-    pretty_print("DNS Hostnames Disabled")
+    sleep(1)
+    ec2_client.modify_vpc_attribute( VpcId = vpc_id , EnableDnsHostnames = { 'Value': True } )
+    pretty_print("DNS Hostnames Enabled")
 except:
-    pretty_print("Could not disable DNS Hostnames")
+    pretty_print("Could not enable DNS Hostnames")
 
 try:
+    sleep(1)
     ec2_client.modify_vpc_attribute( VpcId = vpc_id , EnableDnsSupport = { 'Value': True } )
     pretty_print("DNS Support Enabled")
 except:
@@ -138,18 +139,21 @@ except:
 
 # create an internet gateway and attach it to VPC
 try:
+    sleep(1)
     internetgateway = ec2_resource.create_internet_gateway()
     pretty_print(f"Created Internet Gateway: {internetgateway.id}")
 except:
     pretty_print(f"Could not create the Internet Gateway")
 
 try:
+    sleep(1)
     vpc.attach_internet_gateway(InternetGatewayId=internetgateway.id)
     pretty_print(f"Attached Internet Gateway {internetgateway.id} to VPC {vpc_id}")
 except:
     pretty_print(f"Could not attach Internet Gateway {internetgateway.id} to VPC {vpc_id}")
 
 try:
+    sleep(1)
     route_response = ec2_client.describe_route_tables(
         Filters=[
             {
@@ -167,6 +171,7 @@ except:
     pretty_print(f"Could not find the VPC Main Route Table")
 
 try:
+    sleep(1)
     subnet_response = ec2_client.create_subnet(
         TagSpecifications= [
             {
@@ -189,37 +194,44 @@ try:
 except:
     pretty_print(f"Could not create Public Subnet EU-WEST-1A")
 
-# create a public route (ON SUBNET)
 try:
-    sub1_routetable = vpc.create_route_table(
-            TagSpecifications= [
-            {
-                'ResourceType': 'route-table',
-                'Tags': [
-                    {
-                        'Key': 'Name',
-                        'Value': 'rt_pub_subnet_eu_w1a'
-                    }
-                ]
-            }
+    sleep(1)
+    sub1_routetable = ec2_client.create_route_table(
+        VpcId=vpc_id,
+        TagSpecifications= [
+        {
+            'ResourceType': 'route-table',
+            'Tags': [
+                {
+                    'Key': 'Name',
+                    'Value': 'rt_pub_subnet_eu_w1a'
+                }
+            ]
+        }
         ]
     )
-    rt_1_id = sub1_routetable['RouteTableId']
+    rt_1_id = sub1_routetable['RouteTable']['RouteTableId']
     pretty_print(f"Created Route Table: {rt_1_id}")
 except:
     pretty_print(f"Could not create the Route Table")
 
 try:
-    route = sub1_routetable.create_route(
+    sleep(1)
+    route = ec2_client.create_route(
         DestinationCidrBlock='0.0.0.0/0',
         GatewayId=internetgateway.id,
+        RouteTableId=rt_1_id
     )
     pretty_print("Created Route")
 except:
     pretty_print("Could not create the Route")
 
 try:
-    sub1_routetable.associate_with_subnet(SubnetId=pub1_west1a_sub_id)
+    sleep(1)
+    ec2_client.associate_route_table(
+        RouteTableId=rt_1_id,
+        SubnetId=pub1_west1a_sub_id
+    )
     pretty_print(f"Associated Route Table {rt_1_id} with the Public Subnet EU-WEST-1A: {pub1_west1a_sub_id}")
 except:
     pretty_print(f"Could not associate the Route Table with the Public Subnet EU-WEST-1A")
@@ -227,6 +239,7 @@ except:
 #-----------------------------------------------------------------------------------------------#
 
 try:
+    sleep(1)
     subnet2_response = ec2_client.create_subnet(
         TagSpecifications= [
             {
@@ -250,41 +263,50 @@ except:
     pretty_print(f"Could not create the Public Subnet EU-WEST-1B")
 
 try:
-    sub2_routetable = vpc.create_route_table(
-            TagSpecifications= [
-            {
-                'ResourceType': 'route-table',
-                'Tags': [
-                    {
-                        'Key': 'Name',
-                        'Value': 'rt_pub2_subnet_eu_w1b'
-                    }
-                ]
-            }
+    sleep(1)
+    sub2_routetable = ec2_client.create_route_table(
+        VpcId=vpc_id,
+        TagSpecifications= [
+        {
+            'ResourceType': 'route-table',
+            'Tags': [
+                {
+                    'Key': 'Name',
+                    'Value': 'rt_pub2_subnet_eu_w1b'
+                }
+            ]
+        }
         ]
     )
-    rt_2_id = sub2_routetable['RouteTableId']
+    rt_2_id = sub2_routetable['RouteTable']['RouteTableId']
     pretty_print(f"Created Route Table: {rt_2_id}")
 except:
     pretty_print(f"Could not create the Route Table")
 
 try:
-    route2 = sub2_routetable.create_route(
+    sleep(1)
+    route2 = ec2_client.create_route(
         DestinationCidrBlock='0.0.0.0/0',
         GatewayId=internetgateway.id,
+        RouteTableId= rt_2_id
     )
     pretty_print("Created Route")
 except:
     pretty_print("Could not create the Route")
 
 try:
-    sub2_routetable.associate_with_subnet(SubnetId=pub2_west1b_sub_id)
+    sleep(1)
+    ec2_client.associate_route_table(
+        RouteTableId=rt_2_id,
+        SubnetId=pub2_west1b_sub_id
+    )
     pretty_print(f"Associated Route Table {rt_2_id} with the Public Subnet EU-WEST-1B: {pub2_west1b_sub_id}")
 except:
     pretty_print(f"Could not associate the Route Table with the Public Subnet EU-WEST-1B")
 #--------------------------------------------------------------------------#
 
 try:
+    sleep(1)
     subnet3_response = ec2_client.create_subnet(
         TagSpecifications= [
             {
@@ -309,6 +331,7 @@ except:
 #--------------------------------------------------------------------------#
 
 try:
+    sleep(1)
     subnet4_response = ec2_client.create_subnet(
         TagSpecifications= [
             {
@@ -332,6 +355,7 @@ except:
 #---------------------------------------------------------------------------#
 
 try:
+    sleep(1)
     ip_response = ec2_client.allocate_address()
     pub_ip_address = ip_response['PublicIp']
     allocation_id = ip_response['AllocationId']
@@ -340,6 +364,7 @@ except:
     pretty_print("Could not allocate an Ip Address (Max 5)")
 
 try:
+    sleep(1)
     nat_response = ec2_client.create_nat_gateway(
         AllocationId=allocation_id,
         SubnetId = pub1_west1a_sub_id,
@@ -362,6 +387,7 @@ except:
     pretty_print("Could not create the Nat Gateway")
 
 try:
+    sleep(1)
     waiter = ec2_client.get_waiter('nat_gateway_available')
     pretty_print(f"Waiting for the Nat Gateway to become available...")
     waiter.wait(
@@ -371,76 +397,92 @@ except:
     pretty_print("Could not find the Nat Gateway to wait for")
 
 try:
-    sub3_routetable = vpc.create_route_table(
-            TagSpecifications= [
-            {
-                'ResourceType': 'route-table',
-                'Tags': [
-                    {
-                        'Key': 'Name',
-                        'Value': 'rt_pri_subnet_eu_w1a'
-                    }
-                ]
-            }
+    sleep(1)
+    sub3_routetable = ec2_client.create_route_table(
+        VpcId=vpc_id,
+        TagSpecifications= [
+        {
+            'ResourceType': 'route-table',
+            'Tags': [
+                {
+                    'Key': 'Name',
+                    'Value': 'rt_pri_subnet_eu_w1a'
+                }
+            ]
+        }
         ]
     )
-    rt_3_id = sub3_routetable['RouteTableId']
+    rt_3_id = sub3_routetable['RouteTable']['RouteTableId']
     pretty_print(f"Created Route Table: {rt_3_id}")
 except:
     pretty_print("Could not create the Route Table")
 
 try:
-    nat_route=sub3_routetable.create_route(
+    sleep(1)
+    nat_route=ec2_client.create_route(
         DestinationCidrBlock='0.0.0.0/0',
-        NatGatewayId=nat_id
+        NatGatewayId=nat_id,
+        RouteTableId= rt_3_id
     )
     pretty_print("Created Route")
 except:
     pretty_print("Could not create Route")
 
 try:
-    sub3_routetable.associate_with_subnet(SubnetId=pri_west1a_sub_id)
+    sleep(1)
+    ec2_client.associate_route_table(
+        RouteTableId=rt_3_id,
+        SubnetId=pri_west1a_sub_id
+    )
     pretty_print(f"Associated Route Table {rt_3_id} with the Private Subnet EU-WEST-1A: {pri_west1a_sub_id}")
 except:
     pretty_print("Could not associate the Route Table with the Private Subnet EU-WEST-1A")
 
 try:
-    sub4_routetable = vpc.create_route_table(
-            TagSpecifications= [
-            {
-                'ResourceType': 'route-table',
-                'Tags': [
-                    {
-                        'Key': 'Name',
-                        'Value': 'rt_pri2_subnet_eu_w1b'
-                    }
-                ]
-            }
+    sleep(1)
+    sub4_routetable = ec2_client.create_route_table(
+        VpcId=vpc_id,
+        TagSpecifications= [
+        {
+            'ResourceType': 'route-table',
+            'Tags': [
+                {
+                    'Key': 'Name',
+                    'Value': 'rt_pri2_subnet_eu_w1b'
+                }
+            ]
+        }
         ]
     )
-    rt_4_id = sub4_routetable['RouteTableId']
+    rt_4_id = sub4_routetable['RouteTable']['RouteTableId']
     pretty_print(f"Created Route Table: {rt_4_id}")
 except:
     pretty_print("Could not create thr Route Table")
 
 try:
-    nat2_route=sub4_routetable.create_route(
+    sleep(1)
+    nat2_route=ec2_client.create_route(
         DestinationCidrBlock='0.0.0.0/0',
-        NatGatewayId=nat_id
+        NatGatewayId=nat_id,
+        RouteTableId= rt_4_id
     )
-    sub4_routetable.associate_with_subnet(SubnetId=pri2_west1b_sub_id)
+    ec2_client.associate_route_table(
+        RouteTableId=rt_4_id,
+        SubnetId=pri2_west1b_sub_id
+    )
     pretty_print(f"Associated Route Table {rt_4_id} with the Private Subnet EU-WEST-1B: {pri2_west1b_sub_id}")
 except:
     pretty_print("Could not associate the Route Table with the Private Subnet EU-WEST-1B")
 
 try:
+    sleep(1)
     endpoint_response = ec2_client.create_vpc_endpoint(
         VpcEndpointType='Gateway',
-        VpcId=vpc.id,
+        VpcId=vpc_id,
         ServiceName='com.amazonaws.eu-west-1.s3',
         RouteTableIds=[
-            sub3_routetable.id,
-            sub4_routetable.id
+            sub3_routetable['RouteTable']['RouteTableId'],
+            sub4_routetable['RouteTable']['RouteTableId']
         ],
         PrivateDnsEnabled=False,
     )
@@ -448,12 +490,6 @@ try:
 except:
     pretty_print("Could not create the VPC Endpoints")
 #------------------------------------------------------------------------------#
-
-# If old log exists
-if os.path.exists(log_name):
-    # Delete
-    subproc(f"rm -f {log_name}", "Deleted old log file", "No old log file found", 1)
-
 
 
 # Check if the assign_one keypair exists
@@ -580,25 +616,6 @@ else:
             pretty_print(f"Could not create the security group: {sec_grp}")
 
 
-
-# Get image AMI by desc as ->
-# aws ssm get-parameters --names /aws/service/ami-amazon-linux-latest/amzn2-ami-hvm-x86_64-gp2 --region eu-west-1 >> log.txt"""
-# returns 2nd most recent ami?
-try:
-    ami_resp = ec2_client.describe_images(
-        Filters=[
-            {
-                "Name": "description",
-                "Values": [
-                    "Amazon Linux 2 Kernel 5.10 AMI 2.0.20220218.1 x86_64 HVM gp2"
-                ],
-            }
-        ]
-    )["Images"][0]["ImageId"]
-    pretty_print(f"Successfully retrieved image AMI: {ami_resp}")
-except:
-    pretty_print(f"Could not retrieve the image AMI")
-
 # Create the instance
 try:
     create_response = ec2_resource.create_instances(
@@ -638,31 +655,22 @@ subproc(
 
 
 
-command_list = "sudo yum update -y ; sudo yum install httpd -y ; sudo systemctl enable httpd ; sudo systemctl start httpd;"
+command_list = '''
+sudo yum update -y ; sudo yum install httpd -y ; sudo systemctl enable httpd ; sudo systemctl start httpd;
+sudo touch /var/www/html/index.html; sudo chmod 777 /var/www/html/index.html;
+sudo echo "Template Instance" > /var/www/html/index.html; sudo chmod 400 /var/www/html/index.html
+'''
 ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '{command_list}'"
 result = subproc(
     ssh_command,
-    "Remote ssh echo completed",
-    "Remote ssh echo failed",
+    "Web Server set up on the ec2 instance",
+    "Could not set up the Web Server on the ec2 instance",
     2,
     True
 )
-print(result)
-time.sleep(30)
-
-command_list = "sudo touch index.html"
-ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '{command_list}'"
-result = subproc(
-    ssh_command,
-    "Remote ssh echo completed",
-    "Remote ssh echo failed",
-    2,
-    True
-)
-print(result)
-
 time.sleep(30)
 try:
+    sleep(1)
     image_response = ec2_client.create_image(
         Description=sec_grp,
         InstanceId=created_instance.id,
@@ -688,6 +696,7 @@ except:
     pretty_print("Could not create the AMI Image")
 
 try:
+    sleep(1)
     pretty_print(f"Waiting for the AMI Image {image_id} to exist")
     image_waiter = ec2_client.get_waiter('image_exists')
     image_waiter.wait(ImageIds=[image_id])
@@ -695,6 +704,7 @@ except:
     pretty_print("The AMI Image does not exist")
 
 try:
+    sleep(1)
     pretty_print(f"Waiting for the Image {image_id} to become available")
     img_waiter = ec2_client.get_waiter('image_available')
     img_waiter.wait(ImageIds=[image_id])
@@ -702,6 +712,7 @@ except:
     pretty_print("The AMI Image never became available")
 
 try:
+    sleep(1)
     describe_response = ec2_client.describe_images(ImageIds=[image_id])
     pretty_print(f"Found the AMI image: {image_id}")
 except:
@@ -709,6 +720,7 @@ except:
 
 
 try:
+    sleep(1)
     term_response = ec2_client.terminate_instances(
         InstanceIds=[created_instance.id]
     )
@@ -717,6 +729,7 @@ except:
     pretty_print(f"Could not terminate the instance: {created_instance.id}")
 
 try:
+    sleep(1)
     sg1_response = ec2_client.create_security_group(
         Description='Allows web servers to receive internet traffic, and SSH and RDP traffic from the network.' +
                     'The web servers can also initiate read and write requests to the database servers in the private subnet, and send traffic to the internet',
@@ -730,6 +743,7 @@ except:
 
 if sg1_response != "":
     try:
+        sleep(1)
         sec_ingress1_response = ec2_client.authorize_security_group_ingress(
         GroupId=sg1_response['GroupId'],
         IpPermissions=[
@@ -764,6 +778,7 @@ if sg1_response != "":
         pretty_print("Could not authorize Web Server Security Group inbound rules")
 
     try:
+        sleep(1)
         sec1_egress_response = ec2_client.authorize_security_group_egress(
             GroupId=sg1_response['GroupId'],
             IpPermissions=[
@@ -806,6 +821,7 @@ if sg1_response != "":
         pretty_print("Could not authorize Web Server Security Group outbound rules")
 
 try:
+    sleep(1)
     sg2_response = ec2_client.create_security_group(
         Description='allow read or write database requests from the web servers. The database servers can also initiate traffic bound for the internet',
         GroupName='DBServerSG',
@@ -817,6 +833,7 @@ except:
 
 if sg2_response != "":
     try:
+        sleep(1)
         sec2_ingress_response = ec2_client.authorize_security_group_ingress(
         GroupId=sg2_response['GroupId'],
         IpPermissions=[
@@ -851,6 +868,7 @@ if sg2_response != "":
         pretty_print("Could not authorize DB Server Security Group inbound rules")
 
     try:
+        sleep(1)
         sec2_egress_response = ec2_client.authorize_security_group_egress(
             GroupId=sg2_response['GroupId'],
             IpPermissions=[
@@ -877,6 +895,7 @@ if sg2_response != "":
         pretty_print("Could not authorize DB Server Security Group outbound rules")
 
 try:
+    sleep(1)
     sec1_egress_response = ec2_client.authorize_security_group_egress(
         GroupId=sg1_response['GroupId'],
         IpPermissions=[
@@ -896,6 +915,7 @@ except:
     pretty_print(f"Could not authorize Web Server Security Group outbound rules from DB Server")
 
 try:
+    sleep(1)
     revoke_response = ec2_client.revoke_security_group_egress(
         GroupId=sg1_response['GroupId'],
         IpPermissions=[
@@ -915,6 +935,7 @@ except:
 
 
 try:
+    sleep(1)
     sec2_ingress_response = ec2_client.authorize_security_group_ingress(
         GroupId=sg1_response['GroupId'],
         IpPermissions=[
@@ -934,6 +955,7 @@ except:
     pretty_print("Could not authorize Web Server Security Group inbound rules from DB Server")
 
 try:
+    sleep(1)
     egress_response = ec2_client.authorize_security_group_egress(
         GroupId=sg2_response['GroupId'],
         IpPermissions=[
@@ -953,6 +975,7 @@ except:
     pretty_print("Could not authorize DB Server Security Group outbound rules from Web Server")
 
 try:
+    sleep(1)
     revoke_response = ec2_client.revoke_security_group_egress(
         GroupId=sg2_response['GroupId'],
         IpPermissions=[
@@ -971,6 +994,7 @@ except:
     pretty_print("Could not revoke an unruly outbound rule from DB Server Security Group")
 
 try:
+    sleep(1)
     ingress_response = ec2_client.authorize_security_group_ingress(
         GroupId=sg2_response['GroupId'],
         IpPermissions=[
@@ -990,6 +1014,7 @@ except:
     pretty_print("Could not authorize DB Server Security Group inbound rules from Web Server")
 
 try:
+    sleep(1)
     webserv_subnet = ec2_resource.create_instances(
         ImageId=image_id,
         KeyName=key_name,
@@ -1006,6 +1031,7 @@ except:
     pretty_print("Could not create the instance")
 
 try:
+    sleep(1)
     webserv_waiter = ec2_client.get_waiter('instance_running')
     pretty_print("Waiting for the instance to become available")
     webserv_waiter.wait(InstanceIds=[webserv_id])
@@ -1013,6 +1039,7 @@ except:
     pretty_print("Could not find the instance to wait for")
 
 try:
+    sleep(1)
     webserv_subnet[0].reload()
     webserv_subnet[0].wait_until_running()
     pretty_print(f"Instance running")
@@ -1026,6 +1053,7 @@ curl --silent http://169.254.169.254/latest/meta-data/instance-id/ >> /var/www/h
 '''
 
 try:
+    sleep(1)
     launch_response = auto_client.create_launch_configuration(
         LaunchConfigurationName='assign_two',
         ImageId=image_id,
@@ -1040,29 +1068,32 @@ except:
     pretty_print("Could not create the Launch Configuration")
 
 try:
-    lb_response = load_client.create_load_balancer(
-        Name='assignment-two',
-        Subnets=[
-            pub1_west1a_sub_id,
-            pub2_west1b_sub_id
-        ],
-        SecurityGroups=[sg1_response['GroupId']],
-        Type='application'
-    )
-    pretty_print(f"Created Application Load Balancer in Public Subnets {pub1_west1a_sub_id} and {pub2_west1b_sub_id}")
+   lb_response = load_client.create_load_balancer(
+       Name='assignment-two',
+       Subnets=[
+           pub1_west1a_sub_id,
+           pub2_west1b_sub_id
+       ],
+       SecurityGroups=[sg1_response['GroupId']],
+       Type='application'
+   )
+   pretty_print(f"Created Application Load Balancer in Public Subnets {pub1_west1a_sub_id} and {pub2_west1b_sub_id}")
 except:
-    pretty_print("Could not create the Application Load Balancer")
-
+   pretty_print("Could not create the Application Load Balancer")
+ 
 try:
-    load_waiter = load_client.get_waiter('load_balancer_exists')
-    pretty_print("Waiting for the Load Balancer to exist")
-    load_waiter.wait(Names=['assignment-two'])
+   load_waiter = load_client.get_waiter('load_balancer_exists')
+   pretty_print("Waiting for the Load Balancer to exist")
+   load_waiter.wait(Names=['assignment-two'])
 except:
-    pretty_print("Could not find the Load Balancer")
-
+   pretty_print("Could not find the Load Balancer")
+ 
 try:
-    load_waiter = load_client.get_waiter('load_balancer_available')
-    pretty_print("Waiting for the Load Balancer to become available")
-    load_waiter.wait(Names=['assignment-two'])
+   load_waiter = load_client.get_waiter('load_balancer_available')
+   pretty_print("Waiting for the Load Balancer to become available")
+   load_waiter.wait(Names=['assignment-two'])
 except:
-    pretty_print("Could not find the Load Balancer")
+   pretty_print("Could not find the Load Balancer")
+ 
+#Create auto scaling group
+#
