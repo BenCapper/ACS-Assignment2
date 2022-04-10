@@ -64,11 +64,13 @@ load_client = boto3.client("elbv2")
 
 string_list = list()
 grp_id = list()
-vpc_grp_id = list()
+web_grp_id = list()
+db_grp_id = list()
 key_name_list = ["assign_two"]
 key_file_name = "assign_two.pem"
 sec_grp = "assign_two"
-vpc_sec_grp = "port3000"
+web_sec_grp = "port3000"
+db_sec_grp = "db_sec_grp"
 log_name = "log.txt"
 index_file = "index.html"
 key_name = ""
@@ -103,6 +105,9 @@ pri_west1c = ""
 pub_ip_address = ""
 allocation_id = ""
 endpoint_id = ""
+vpc_sec_grp_resp = ""
+web_sec_grp_resp = ""
+db_sec_grp_resp = ""
 
 tag = {"Key": "Name", "Value": "Master Web Server - Assign Two"}
 
@@ -669,7 +674,14 @@ try:
 except:
     pretty_print("Could not create the VPC Endpoints")
 
-
+try:
+    dhcp_response = ec2_client.associate_dhcp_options(
+        DhcpOptionsId='dopt-ab9acdcd',
+        VpcId=vpc_id,
+    )
+    pretty_print(f"Associated DHCP options set with Vpc {vpc_id}")
+except:
+    pretty_print(f"Could not associate DHCP options set with the Vpc")
 
 # Check if the assign_two keypair exists
 try:
@@ -753,6 +765,9 @@ else:
             GroupName=sec_grp, Description="Port3000"
         )
         pretty_print(f"Created the security group: {sec_grp}")
+        waiter = ec2_client.get_waiter('security_group_exists')
+        pretty_print("Waiting for the Security Group to become available")
+        waiter.wait(GroupNames=[web_sec_grp])
     except:
         pretty_print(f"Could not create the security group: {sec_grp}")
     # If the create function was successful, set ip permissions
@@ -850,7 +865,7 @@ while result.returncode != 0:
 pretty_print(str(result.stdout)[4:-3])
 
 
-sleep(10)
+sleep(20)
 
 try:
     sleep(1)
@@ -896,58 +911,54 @@ try:
 except:
     pretty_print(f"Could not terminate the instance: {inst_id}")
 
-auto_user_data = '''
-#!/bin/bash
-su - ec2-user -c 'node app.js'
-'''
 
-try:
-    sleep(1)
-    launch_response = auto_client.create_launch_configuration(
-        LaunchConfigurationName='assign_two',
-        ImageId=image_id,
-        KeyName=key_name,
-        SecurityGroups=vpc_grp_id,
-        UserData=auto_user_data,
-        InstanceType='t2.nano',
-        InstanceMonitoring={'Enabled': True}
-    )
-    pretty_print("Created the Launch Configuration")
-except:
-    pretty_print("Could not create the Launch Configuration")
 
 
 try:
     # Check if security group already exists
     sleep(1)
     desc_response = ec2_client.describe_security_groups(
-        GroupNames=[vpc_sec_grp]
+        Filters=[
+            {
+                'Name': 'group-name',
+                'Values': [web_sec_grp]
+            }
+        ]
         )
-    vpc_grp_id.append(desc_response[
+    web_grp_id.append(desc_response[
         "SecurityGroups"][0]["GroupId"]
         )
+    pretty_print(f"Found Vpc Security Group {web_grp_id}")
 except:
-    pretty_print(f"Could not find the {vpc_sec_grp} security group")
+    pretty_print(f"Could not find the {web_sec_grp} security group")
 
-# grp_id isnt empty, use that security group
-if vpc_grp_id:
+# vpc_grp_id isnt empty, use that security group
+if web_grp_id:
     sleep(1)
-    pretty_print(f"Using the security group: {vpc_sec_grp}")
-# grp_id is empty, create new security group
+    pretty_print(f"Using the security group: {web_sec_grp}")
+# vpc_grp_id is empty, create new security group
 else:
     try:
         sleep(1)
-        vpc_sec_grp_resp = ec2_resource.create_security_group(
-            GroupName=vpc_sec_grp, Description="Port3000"
+        web_sec_grp_resp = ec2_resource.create_security_group(
+            GroupName="Port3000",
+            Description="Port3000",
+            VpcId=vpc_id
         )
-        pretty_print(f"Created the security group: {vpc_sec_grp}")
+        web_grp_id.append(web_sec_grp_resp.id)
+        pretty_print(f"Created the security group: {web_sec_grp}")
+        waiter = ec2_client.get_waiter('security_group_exists')
+        pretty_print("Waiting for the Security Group to become available")
+        waiter.wait(
+            GroupIds=web_grp_id
+        )
     except:
-        pretty_print(f"Could not create the security group: {vpc_sec_grp}")
+        pretty_print(f"Could not create the security group: {web_sec_grp}")
     # If the create function was successful, set ip permissions
-    if vpc_sec_grp_resp:
+    if web_sec_grp_resp:
         try:
             sleep(1)
-            vpc_sec_ingress_response = vpc_sec_grp_resp.authorize_ingress(
+            web_sec_ingress_response = web_sec_grp_resp.authorize_ingress(
                 IpPermissions=[
                     {
                         "FromPort": 22,
@@ -965,41 +976,267 @@ else:
                             {"CidrIp": "0.0.0.0/0", "Description": "port3000"},
                         ],
                     },
+                    {
+                        "FromPort": 80,
+                        "ToPort": 80,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "port3000"},
+                        ],
+                    },
+                    {
+                        "FromPort": 443,
+                        "ToPort": 443,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "port3000"},
+                        ],
+                    },
+                    {
+                        "FromPort": 3389,
+                        "ToPort": 3389,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "port3000"},
+                        ],
+                    },
                 ],
             )
-            pretty_print(f"Security group rules set for: {vpc_sec_grp}")
+            pretty_print(f"Security group inbound rules set for: {web_sec_grp}")
         except:
-            pretty_print("Security group rules not set")
+            pretty_print("Inbound Security group rules not set")
+
+
+try:
+    # Check if security group already exists
+    sleep(1)
+    desc_response = ec2_client.describe_security_groups(
+        Filters=[
+            {
+                'Name': 'group-name',
+                'Values': [db_sec_grp]
+            }
+        ]
+        )
+    db_grp_id.append(desc_response[
+        "SecurityGroups"][0]["GroupId"]
+        )
+    pretty_print(f"Found Vpc Security Group {db_grp_id}")
+except:
+    pretty_print(f"Could not find the {db_sec_grp} security group")
+
+# vpc_grp_id isnt empty, use that security group
+if db_grp_id:
+    sleep(1)
+    pretty_print(f"Using the security group: {db_sec_grp}")
+# vpc_grp_id is empty, create new security group
+else:
+    try:
+        sleep(1)
+        db_sec_grp_resp = ec2_resource.create_security_group(
+            GroupName=db_sec_grp,
+            Description=db_sec_grp,
+            VpcId=vpc_id
+        )
+        db_grp_id.append(db_sec_grp_resp.id)
+        pretty_print(f"Created the security group: {db_sec_grp}")
+        waiter = ec2_client.get_waiter('security_group_exists')
+        pretty_print("Waiting for the Security Group to become available")
+        waiter.wait(
+            GroupIds=db_grp_id
+        )
+    except:
+        pretty_print(f"Could not create the security group: {db_sec_grp}")
+    # If the create function was successful, set ip permissions
+    if db_sec_grp_resp:
         try:
-            # Get the new security group id
             sleep(1)
-            vpc_desc_security = ec2_client.describe_security_groups(GroupNames=[vpc_sec_grp])
-            vpc_grp_id.append(vpc_desc_security["SecurityGroups"][0]["GroupId"])
-            pretty_print(f"Using the security group: {vpc_sec_grp}")
+            db_sec_ingress_response = ec2_client.authorize_security_group_ingress(
+                GroupId=db_grp_id[0],
+                IpPermissions=[
+                    {
+                        "FromPort": 1433,
+                        "ToPort": 1433,
+                        "IpProtocol": "tcp",
+                        "UserIdGroupPairs": [
+                            {
+                                'GroupId': web_grp_id[0],
+                                'VpcId': vpc_id
+                            }
+                        ]
+                    },
+                    {
+                        "FromPort": 3306,
+                        "ToPort": 3306,
+                        "IpProtocol": "tcp",
+                        "UserIdGroupPairs": [
+                            {
+                                'GroupId': web_grp_id[0],
+                                'VpcId': vpc_id
+                            }
+                        ]
+                    },
+                ],
+            )
+            pretty_print(f"Security group inbound rules set for: {db_sec_grp}")
         except:
-            pretty_print(f"Could not create the security group: {vpc_sec_grp}")
+            pretty_print("Inbound Security group rules not set")
+
+        try:
+            sleep(1)
+            db_sec_egress_response = ec2_client.authorize_security_group_egress(
+                GroupId=db_grp_id[0],
+                IpPermissions=[
+                    {
+                        "FromPort": 80,
+                        "ToPort": 80,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "http"},
+                        ],
+                    },
+                    {
+                        "FromPort": 443,
+                        "ToPort": 443,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "https"},
+                        ],
+                    },
+                ],
+            )
+            pretty_print(f"Security group outbound rules set for: {db_sec_grp}")
+        except:
+            pretty_print("Outbound Security group rules not set")
+
+        try:
+            sleep(1)
+            web_sec_egress_response = web_sec_grp_resp.authorize_egress(
+                IpPermissions=[
+                    {
+                        "FromPort": 80,
+                        "ToPort": 80,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "ssh"},
+                        ],
+                    },
+                    {
+                        "FromPort": 3000,
+                        "ToPort": 3000,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "port3000"},
+                        ],
+                    },
+                    {
+                        "FromPort": 1433,
+                        "ToPort": 1433,
+                        "IpProtocol": "tcp",
+                        "UserIdGroupPairs": [
+                            {
+                                'GroupId': db_grp_id[0],
+                                'VpcId': vpc_id
+                            }
+                        ]
+                    },
+                    {
+                        "FromPort": 3306,
+                        "ToPort": 3306,
+                        "IpProtocol": "tcp",
+                        "UserIdGroupPairs": [
+                            {
+                                'GroupId': db_grp_id[0],
+                                'VpcId': vpc_id
+                            }
+                        ]
+                    },
+                ],
+            )
+            pretty_print(f"Security group outbound rules set for: {web_sec_grp}")
+        except:
+            pretty_print("Outbound Security group rules not set")
+
+        try:
+            sleep(1)
+            revoke_response = ec2_client.revoke_security_group_egress(
+                GroupId=db_grp_id[0],
+                IpPermissions=[
+                    {
+                        'IpProtocol': '-1',
+                        'IpRanges': [
+                            {
+                                'CidrIp': '0.0.0.0/0'
+                            }
+                        ]
+                    }
+                ]
+            )
+            pretty_print("Revoked an unruly outbound rule from DB Server Security Group")
+        except:
+            pretty_print("Could not revoke an unruly outbound rule from DB Server Security Group")
+
+        try:
+            sleep(1)
+            revoke_response = ec2_client.revoke_security_group_egress(
+                GroupId=web_grp_id[0],
+                IpPermissions=[
+                    {
+                        'IpProtocol': '-1',
+                        'IpRanges': [
+                            {
+                                'CidrIp': '0.0.0.0/0'
+                            }
+                        ]
+                    }
+                ]
+            )
+            pretty_print("Revoked an unruly outbound rule from Web App Server Security Group")
+        except:
+            pretty_print("Could not revoke an unruly outbound rule from Web App Server Security Group")
+            
+
+
+auto_user_data = '''
+#!/bin/bash
+su - ec2-user -c 'node app.js'
+'''
+try:
+    sleep(1)
+    launch_response = auto_client.create_launch_configuration(
+        LaunchConfigurationName='assign_two',
+        ImageId=image_id,
+        KeyName=key_name,
+        SecurityGroups=web_grp_id,
+        UserData=auto_user_data,
+        InstanceType='t2.nano',
+        InstanceMonitoring={'Enabled': True}
+    )
+    pretty_print("Created the Launch Configuration")
+except:
+    pretty_print("Could not create the Launch Configuration")
 
 try:
     vpc_create_response = ec2_resource.create_instances(
-        ImageId=image_id,
-        KeyName=key_name,
-        InstanceType="t2.nano",
-        SecurityGroupIds=vpc_grp_id,
-        UserData=auto_user_data,
-        MinCount=1,
-        MaxCount=1,
-        SubnetId=pub_west1a,
-        Monitoring={'Enabled': True},
+            ImageId=image_id,
+            KeyName=key_name,
+            InstanceType="t2.nano",
+            SecurityGroupIds=web_grp_id,
+            UserData=auto_user_data,
+            MinCount=1,
+            MaxCount=1,
+            SubnetId=pub_west1a,
+            Monitoring={'Enabled': True},
     )
     vpc_created_instance = vpc_create_response[0]
     vpc_inst_id = vpc_created_instance.id
     pretty_print(f"Instance {vpc_inst_id} created")
     pretty_print(f"Waiting for Instance {vpc_inst_id} to become available...")
-    created_instance.wait_until_running()
+    vpc_created_instance.wait_until_running()
     pretty_print(f"Instance {vpc_inst_id} running")
-    created_instance.reload()
-    created_instance.wait_until_running()
-    public_ip = created_instance.public_ip_address
+    vpc_created_instance.reload()
+    vpc_created_instance.wait_until_running()
+    public_ip = vpc_created_instance.public_ip_address
 except:
     pretty_print("Could not create ec2 instance")
 
@@ -1037,4 +1274,3 @@ try:
 except:
    pretty_print("Could not find the Load Balancer")
  
-
