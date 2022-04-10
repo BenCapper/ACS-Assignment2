@@ -108,6 +108,7 @@ endpoint_id = ""
 vpc_sec_grp_resp = ""
 web_sec_grp_resp = ""
 db_sec_grp_resp = ""
+lb_dns = ""
 
 tag = {"Key": "Name", "Value": "Master Web Server - Assign Two"}
 
@@ -1204,7 +1205,7 @@ su - ec2-user -c 'node app.js'
 try:
     sleep(1)
     launch_response = auto_client.create_launch_configuration(
-        LaunchConfigurationName='assign_two',
+        LaunchConfigurationName='web',
         ImageId=image_id,
         KeyName=key_name,
         SecurityGroups=web_grp_id,
@@ -1246,17 +1247,20 @@ try:
 except:
     pretty_print("Could not open the Web Browser")
 
+# CREATE 80/443 Security Group for LB
+
 try:
-   lb_response = load_client.create_load_balancer(
-       Name='assignment-two',
-       Subnets=[
-           pub_west1a,
-           pub_west1b
-       ],
-       SecurityGroups=[vpc_grp_id],
-       Type='application'
-   )
-   pretty_print(f"Created Application Load Balancer in Public Subnets {pub_west1a} and {pub_west1b}")
+    lb_response = load_client.create_load_balancer(
+        Name='assignment-two',
+        Subnets=[
+            pub_west1a,
+            pub_west1b
+        ],
+        SecurityGroups=[vpc_grp_id],
+        Type='application'
+    )
+    lb_dns = lb_response['LoadBalancers'][0]['DNSName']
+    pretty_print(f"Created Application Load Balancer in Public Subnets {pub_west1a} and {pub_west1b}")
 except:
    pretty_print("Could not create the Application Load Balancer")
  
@@ -1273,4 +1277,15 @@ try:
    load_waiter.wait(Names=['assignment-two'])
 except:
    pretty_print("Could not find the Load Balancer")
- 
+
+# Install OpenSSL and create the Cert for the LB
+cmd=f'''
+openssl \
+  req \
+  -newkey rsa:2048 -nodes \
+  -keyout privkey.pem \
+  -x509 -days 36500 -out certificate.pem \
+  -subj "/C=IE/ST=WX/L=Earth/O=WIT/OU=SSD/CN={lb_dns}"
+'''
+subprocess.run('echo "password" | sudo -S dnf install openssl -y', shell=True)
+subprocess.run(cmd, shell=True)
