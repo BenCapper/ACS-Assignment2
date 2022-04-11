@@ -1,5 +1,6 @@
 import os
 import time
+from typing import Protocol
 import boto3
 import subprocess
 import datetime
@@ -52,7 +53,7 @@ def subproc(cmd, pass_str, err_str, sleep_dur, output=None):
 # Create launch config based on custom template - done
 # Create elastic load balancer - done
 # Create an auto scaling group
-# Create open SSL Cert and LB listener
+# Create open SSL Cert and LB listener - done
 # Configure dynamic scaling policies based on cloudwatch alarms
 # Test traffic to load balancer
 
@@ -61,16 +62,19 @@ ec2_resource = boto3.resource("ec2")
 ec2_client = boto3.client("ec2")
 auto_client = boto3.client('autoscaling')
 load_client = boto3.client("elbv2")
+cert_client = boto3.client('acm')
 
 string_list = list()
 grp_id = list()
 web_grp_id = list()
 db_grp_id = list()
+lb_grp_id = list()
 key_name_list = ["assign_two"]
 key_file_name = "assign_two.pem"
 sec_grp = "assign_two"
 web_sec_grp = "port3000"
 db_sec_grp = "db_sec_grp"
+lb_sec_grp = "lb_sec_grp"
 log_name = "log.txt"
 index_file = "index.html"
 key_name = ""
@@ -108,7 +112,17 @@ endpoint_id = ""
 vpc_sec_grp_resp = ""
 web_sec_grp_resp = ""
 db_sec_grp_resp = ""
+lb_grp_resp = ""
 lb_dns = ""
+b_cert = ""
+priv_key = ""
+lb_arn = ""
+cert_arn = ""
+http_arn = ""
+https_arn = ""
+http_list_arn = ""
+https_list_arn = ""
+lb_sec_id = ""
 
 tag = {"Key": "Name", "Value": "Master Web Server - Assign Two"}
 
@@ -706,7 +720,7 @@ else:
     sleep(1)
     pretty_print("No old keypairs found")
 
-# If there is already an AWS key named assign_one, delete it
+# If there is already an AWS key named assign_two, delete it
 if found_key_name == key_name_list[0]:
     try:
         delete_key_resp = ec2_client.delete_key_pair(
@@ -742,6 +756,7 @@ work_with_file(
     1,
 )
 
+# Create security group for template instance
 try:
     # Check if security group already exists
     sleep(1)
@@ -768,13 +783,14 @@ else:
         pretty_print(f"Created the security group: {sec_grp}")
         waiter = ec2_client.get_waiter('security_group_exists')
         pretty_print("Waiting for the Security Group to become available")
-        waiter.wait(GroupNames=[web_sec_grp])
+        waiter.wait(GroupNames=[sec_grp])
     except:
         pretty_print(f"Could not create the security group: {sec_grp}")
     # If the create function was successful, set ip permissions
     if sec_grp_resp:
         try:
             sleep(1)
+            # Inbound rules
             sec_ingress_response = sec_grp_resp.authorize_ingress(
                 IpPermissions=[
                     {
@@ -831,6 +847,7 @@ except:
     pretty_print("Could not create the ec2 Instance")
 
 
+# Set Keypair permissions
 subproc(
     f"chmod 400 {key_file_name}",
     "Keypair permissions set",
@@ -838,6 +855,7 @@ subproc(
     2,
 )
 
+# SSH into instance and install the web app
 command_list = '''
 sudo yum update -y ; curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.37.1/install.sh | bash;
 . ~/.nvm/nvm.sh; nvm install node; nvm install --lts; curl https://witdevops.s3-eu-west-1.amazonaws.com/app.js --output app.js;
@@ -850,8 +868,6 @@ result = subproc(
     2,
     True
 )
-print(result)
-
 
 # First ssh attempt failed, keep trying
 while result.returncode != 0:
@@ -863,11 +879,10 @@ while result.returncode != 0:
     2,
     True
 )
-pretty_print(str(result.stdout)[4:-3])
-
 
 sleep(20)
 
+# Create an image from the instance
 try:
     sleep(1)
     image_response = ec2_client.create_image(
@@ -880,6 +895,7 @@ try:
 except:
     pretty_print("Could not create the AMI Image")
 
+# Wait for the image to exist
 try:
     sleep(1)
     pretty_print(f"Waiting for the AMI Image {image_id} to exist")
@@ -888,6 +904,7 @@ try:
 except:
     pretty_print("The AMI Image does not exist")
 
+# Wait for the image to become available
 try:
     sleep(1)
     pretty_print(f"Waiting for the AMI Image {image_id} to become available")
@@ -903,6 +920,7 @@ try:
 except:
     pretty_print("Could not find the AMI image")
 
+# Terminate the template instance
 try:
     sleep(1)
     term_response = ec2_client.terminate_instances(
@@ -912,9 +930,7 @@ try:
 except:
     pretty_print(f"Could not terminate the instance: {inst_id}")
 
-
-
-
+# Create the Web App security group
 try:
     # Check if security group already exists
     sleep(1)
@@ -933,11 +949,11 @@ try:
 except:
     pretty_print(f"Could not find the {web_sec_grp} security group")
 
-# vpc_grp_id isnt empty, use that security group
+# web_grp_id isnt empty, use that security group
 if web_grp_id:
     sleep(1)
     pretty_print(f"Using the security group: {web_sec_grp}")
-# vpc_grp_id is empty, create new security group
+# web_grp_id is empty, create new security group
 else:
     try:
         sleep(1)
@@ -959,6 +975,7 @@ else:
     if web_sec_grp_resp:
         try:
             sleep(1)
+            # Web Inbound rules
             web_sec_ingress_response = web_sec_grp_resp.authorize_ingress(
                 IpPermissions=[
                     {
@@ -1007,7 +1024,7 @@ else:
         except:
             pretty_print("Inbound Security group rules not set")
 
-
+# Create the DB security group
 try:
     # Check if security group already exists
     sleep(1)
@@ -1026,11 +1043,11 @@ try:
 except:
     pretty_print(f"Could not find the {db_sec_grp} security group")
 
-# vpc_grp_id isnt empty, use that security group
+# db_grp_id isnt empty, use that security group
 if db_grp_id:
     sleep(1)
     pretty_print(f"Using the security group: {db_sec_grp}")
-# vpc_grp_id is empty, create new security group
+# db_grp_id is empty, create new security group
 else:
     try:
         sleep(1)
@@ -1052,6 +1069,7 @@ else:
     if db_sec_grp_resp:
         try:
             sleep(1)
+            # DB inbound rules
             db_sec_ingress_response = ec2_client.authorize_security_group_ingress(
                 GroupId=db_grp_id[0],
                 IpPermissions=[
@@ -1085,6 +1103,7 @@ else:
 
         try:
             sleep(1)
+            #DB outbound rules
             db_sec_egress_response = ec2_client.authorize_security_group_egress(
                 GroupId=db_grp_id[0],
                 IpPermissions=[
@@ -1112,6 +1131,7 @@ else:
 
         try:
             sleep(1)
+            # Web outbound rules
             web_sec_egress_response = web_sec_grp_resp.authorize_egress(
                 IpPermissions=[
                     {
@@ -1160,6 +1180,7 @@ else:
 
         try:
             sleep(1)
+            # Remove the default added all traffic outbound rule
             revoke_response = ec2_client.revoke_security_group_egress(
                 GroupId=db_grp_id[0],
                 IpPermissions=[
@@ -1179,6 +1200,7 @@ else:
 
         try:
             sleep(1)
+            # Remove the default added all traffic outbound rule
             revoke_response = ec2_client.revoke_security_group_egress(
                 GroupId=web_grp_id[0],
                 IpPermissions=[
@@ -1197,18 +1219,19 @@ else:
             pretty_print("Could not revoke an unruly outbound rule from Web App Server Security Group")
             
 
-
+# Starts the web app
 auto_user_data = '''
 #!/bin/bash
 su - ec2-user -c 'node app.js'
 '''
+# Create a Launch configuration based on the image
 try:
     sleep(1)
     launch_response = auto_client.create_launch_configuration(
         LaunchConfigurationName='web',
         ImageId=image_id,
         KeyName=key_name,
-        SecurityGroups=web_grp_id,
+        SecurityGroups=[web_grp_id[0]],
         UserData=auto_user_data,
         InstanceType='t2.nano',
         InstanceMonitoring={'Enabled': True}
@@ -1217,6 +1240,7 @@ try:
 except:
     pretty_print("Could not create the Launch Configuration")
 
+# Create a security group in Pri subnet with app running on port 3000
 try:
     vpc_create_response = ec2_resource.create_instances(
             ImageId=image_id,
@@ -1241,36 +1265,117 @@ try:
 except:
     pretty_print("Could not create ec2 instance")
 
+# Test the Vpc infra is correct with HelloWorld web app
 try:
     webbrowser.open_new_tab(f"http://{public_ip}:3000")
     pretty_print("Opening Web Browser to Hello World app")
 except:
     pretty_print("Could not open the Web Browser")
 
-# CREATE 80/443 Security Group for LB
-
+# Create 80/443 Security Group for Load Balancer
 try:
-    lb_response = load_client.create_load_balancer(
-        Name='assignment-two',
-        Subnets=[
-            pub_west1a,
-            pub_west1b
-        ],
-        SecurityGroups=[vpc_grp_id],
-        Type='application'
+    # Check if security group already exists
+    sleep(1)
+    desc_response = ec2_client.describe_security_groups(
+        Filters=[
+            {
+                'Key': 'group-name',
+                'Value': lb_sec_grp
+            }
+        ]
     )
-    lb_dns = lb_response['LoadBalancers'][0]['DNSName']
-    pretty_print(f"Created Application Load Balancer in Public Subnets {pub_west1a} and {pub_west1b}")
+    if desc_response:
+        lb_grp_id.append(desc_response[
+            "SecurityGroups"][0]["GroupId"]
+        )
 except:
-   pretty_print("Could not create the Application Load Balancer")
- 
+    pretty_print(f"Could not find the {lb_sec_grp} security group")
+
+# lb_id isnt empty, use that security group
+if lb_grp_id:
+    sleep(1)
+    pretty_print(f"Using the security group: {lb_sec_grp}")
+# lb_id is empty, create new security group
+else:
+    sleep(1)
+    lb_grp_resp = ec2_resource.create_security_group(
+        GroupName=lb_sec_grp,
+        VpcId=vpc_id,
+        Description=lb_sec_grp
+    )
+    lb_sec_id = lb_grp_resp.id
+    pretty_print(f"Created the security group: {lb_sec_grp}")
+
+        #pretty_print(f"Could not create the security group: {lb_sec_grp}")
+    try:
+        waiter = ec2_client.get_waiter('security_group_exists')
+        pretty_print("Waiting for the Security Group to become available")
+        waiter.wait(GroupIds=[lb_sec_id])
+    except:
+        pretty_print("Could not find the LB security group to wait for")
+    # If the create function was successful, set ip permissions
+    if lb_grp_resp:
+        try:
+            sleep(1)
+            sec_ingress_response = lb_grp_resp.authorize_ingress(
+                IpPermissions=[
+                    {
+                        "FromPort": 80,
+                        "ToPort": 80,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "ssh"},
+                        ],
+                    },
+                    {
+                        "FromPort": 443,
+                        "ToPort": 443,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "port3000"},
+                        ],
+                    },
+                ],
+            )
+            pretty_print(f"Inbound security group rules set for: {lb_sec_grp}")
+        except:
+            pretty_print("Inbound security group rules not set")
+        #try:
+            # Get the new security group id
+        #    sleep(1)
+        #    lb_desc_security = ec2_client.describe_security_groups(GroupNames=[lb_sec_id])
+        #    lb_grp_id.append(lb_desc_security["SecurityGroups"][0]["GroupId"])
+        #    pretty_print(f"Using the security group: {lb_sec_grp}")
+        #except:
+        #    pretty_print(f"Could not create the security group: {lb_sec_grp}")
+
+# Create an Application Load Balancer for 3 public subnets
+
+lb_response = load_client.create_load_balancer(
+    Name='assignment-two',
+    Subnets=[
+        pub_west1a,
+        pub_west1b,
+        pub_west1c
+    ],
+    SecurityGroups=[lb_sec_id],
+    Type='application'
+)
+lb_arn = lb_response['LoadBalancers'][0]['LoadBalancerArn']
+lb_dns = lb_response['LoadBalancers'][0]['DNSName']
+pretty_print(f"Created Application Load Balancer in Public Subnets {pub_west1a}, {pub_west1b}, {pub_west1c}")
+
+   #pretty_print("Could not create the Application Load Balancer")
+
+# Wait for the LB to exist
 try:
    load_waiter = load_client.get_waiter('load_balancer_exists')
    pretty_print("Waiting for the Load Balancer to exist")
    load_waiter.wait(Names=['assignment-two'])
 except:
    pretty_print("Could not find the Load Balancer")
- 
+
+# Wait for the LB to become available
 try:
    load_waiter = load_client.get_waiter('load_balancer_available')
    pretty_print("Waiting for the Load Balancer to become available")
@@ -1278,8 +1383,9 @@ try:
 except:
    pretty_print("Could not find the Load Balancer")
 
-# Install OpenSSL and create the Cert for the LB
-cmd=f'''
+
+openssl_cmd = 'echo "acspassword" | sudo -S dnf install openssl -y'
+cert_cmd=f'''
 openssl \
   req \
   -newkey rsa:2048 -nodes \
@@ -1287,5 +1393,137 @@ openssl \
   -x509 -days 36500 -out certificate.pem \
   -subj "/C=IE/ST=WX/L=Earth/O=WIT/OU=SSD/CN={lb_dns}"
 '''
-subprocess.run('echo "password" | sudo -S dnf install openssl -y', shell=True)
-subprocess.run(cmd, shell=True)
+
+# Installs OpenSSL
+subproc(
+    openssl_cmd,
+    "Installed OpenSSL locally",
+    "Could not install OpenSSL, already installed or incorrect password",
+    1
+)
+
+# Create cert for the LB
+subproc(
+    cert_cmd,
+    "Created OpenSSL Certificate",
+    "Could not create OpenSSL Certificate",
+    1
+)
+
+# Convert the cert to bytes
+try:
+    with open("certificate.pem", "r") as cert:
+        content = cert.read()
+        b_cert = bytes(content, 'utf-8')
+        pretty_print("Certificate converted to bytes")
+except:
+    print("Could not convert certificate to bytes")
+
+# Convert the key to bytes
+try:
+    with open("privkey.pem", "r") as key:
+        content = key.read()
+        priv_key = bytes(content, 'utf-8')
+        pretty_print("Private key converted to bytes")
+except:
+    print("Could not convert Private key to bytes")
+
+# Import the certificate to AWS
+try:
+    cert_response = cert_client.import_certificate(
+        Certificate=b_cert,
+        PrivateKey=priv_key,
+        Tags=[
+            {
+                'Key': 'Name',
+                'Value': 'LB_Cert'
+            }
+        ]
+    )
+    cert_arn = cert_response['CertificateArn']
+    pretty_print(f"Imported LB Certificate: {cert_arn}")
+except:
+    pretty_print("Could not import LB Certificate")
+
+# Create a HTTP target group
+try:
+    tg_response = load_client.create_target_group(
+        Name='assign-http-tg',
+        Protocol='HTTP',
+        Port=80,
+        VpcId=vpc_id,
+        TargetType='instance'
+    )
+    http_arn = tg_response['TargetGroups'][0]['TargetGroupArn']
+    pretty_print(f"Created HTTP Target Group {http_arn}")
+except:
+    pretty_print("Could not create HTTP Target Group")
+
+# Create a HTTPS target group
+try:
+    tg2_response = load_client.create_target_group(
+        Name='assign-https-tg',
+        Protocol='HTTPS',
+        Port=443,
+        VpcId=vpc_id,
+        TargetType='instance'
+    )
+    https_arn = tg2_response['TargetGroups'][0]['TargetGroupArn']
+    pretty_print(f"Created HTTPS Target Group {https_arn}")
+except:
+    pretty_print("Could not create HTTPS Target Group")
+
+# Create a HTTP listener
+try:
+    http_list_response = load_client.create_listener(
+        LoadBalancerArn=lb_arn,
+        Protocol='HTTP',
+        Port=80,
+        DefaultActions=[
+            {
+                'Type': 'forward',
+                'TargetGroupArn': http_arn
+            }
+        ],
+        Tags=[
+            {
+                'Key': 'Name',
+                'Value': 'HTTP Listener'
+            }
+        ]
+    )
+    http_list_arn = http_list_response['Listeners'][0]['ListenerArn']
+    pretty_print("Created HTTP Listener")
+except:
+    pretty_print("Could not create HTTP Listener")
+
+# Create a HTTPS listener
+try:
+    https_list_response = load_client.create_listener(
+        LoadBalancerArn=lb_arn,
+        Protocol='HTTPS',
+        Port=443,
+        Certificates=[
+            {
+                'CertificateArn': cert_arn,
+            }
+        ],
+        DefaultActions=[
+            {
+                'Type': 'forward',
+                'TargetGroupArn': https_arn
+            }
+        ],
+        Tags=[
+            {
+                'Key': 'Name',
+                'Value': 'HTTPS Listener'
+            }
+        ]
+    )
+    https_list_arn = https_list_response['Listeners'][0]['ListenerArn']
+    pretty_print("Created HTTPS Listener")
+except:
+    pretty_print("Could not create HTTPS Listener")
+
+# Create Auto-Scaling Group
