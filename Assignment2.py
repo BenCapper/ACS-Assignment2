@@ -824,6 +824,7 @@ else:
             pretty_print(f"Could not create the security group: {sec_grp}")
 
 # Create a template instance
+
 try:
     create_response = ec2_resource.create_instances(
         ImageId='ami-0069d66985b09d219',
@@ -857,6 +858,33 @@ subproc(
 
 # SSH into instance and install the web app
 command_list = '''
+sudo yum install httpd -y; sudo systemctl enable httpd; sudo systemctl start httpd;
+sudo touch index.html; sudo chmod 777 index.html; sudo echo "<b>Assignment Two Index</b> " >> index.html;
+sudo chmod 400 index.html;
+sudo cp index.html /var/www/html/index.html
+'''
+ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '{command_list}'"
+result = subproc(
+    ssh_command,
+    "Http server set up on the ec2 instance",
+    "Could not set up the Http server on the ec2 instance",
+    2,
+    True
+)
+print(result)
+# First ssh attempt failed, keep trying
+while result.returncode != 0:
+    pretty_print("Failed ssh attempt, trying again...")
+    result = subproc(
+    ssh_command,
+    "Http server set up on the ec2 instance",
+    "Could not set up the Http server on the ec2 instance",
+    2,
+    True
+)
+print(result)
+# SSH into instance and install the web app
+command_list = '''
 sudo yum update -y ; curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.37.1/install.sh | bash;
 . ~/.nvm/nvm.sh; nvm install node; nvm install --lts; curl https://witdevops.s3-eu-west-1.amazonaws.com/app.js --output app.js;
 '''
@@ -865,17 +893,6 @@ result = subproc(
     ssh_command,
     "Hello World web app set up on the ec2 instance",
     "Could not set up the Hello World web app on the ec2 instance",
-    2,
-    True
-)
-
-# First ssh attempt failed, keep trying
-while result.returncode != 0:
-    pretty_print("Failed ssh attempt, trying again...")
-    result = subproc(
-    ssh_command,
-    "Remote ssh echo completed",
-    "Remote ssh echo failed",
     2,
     True
 )
@@ -1340,14 +1357,7 @@ else:
             pretty_print(f"Inbound security group rules set for: {lb_sec_grp}")
         except:
             pretty_print("Inbound security group rules not set")
-        #try:
-            # Get the new security group id
-        #    sleep(1)
-        #    lb_desc_security = ec2_client.describe_security_groups(GroupNames=[lb_sec_id])
-        #    lb_grp_id.append(lb_desc_security["SecurityGroups"][0]["GroupId"])
-        #    pretty_print(f"Using the security group: {lb_sec_grp}")
-        #except:
-        #    pretty_print(f"Could not create the security group: {lb_sec_grp}")
+
 
 # Create an Application Load Balancer for 3 public subnets
 
@@ -1383,51 +1393,6 @@ try:
 except:
    pretty_print("Could not find the Load Balancer")
 
-
-openssl_cmd = 'echo "acspassword" | sudo -S dnf install openssl -y'
-cert_cmd=f'''
-openssl \
-  req \
-  -newkey rsa:2048 -nodes \
-  -keyout privkey.pem \
-  -x509 -days 36500 -out certificate.pem \
-  -subj "/C=IE/ST=WX/L=Earth/O=WIT/OU=SSD/CN={lb_dns}"
-'''
-
-# Installs OpenSSL
-subproc(
-    openssl_cmd,
-    "Installed OpenSSL locally",
-    "Could not install OpenSSL, already installed or incorrect password",
-    1
-)
-
-# Create cert for the LB
-subproc(
-    cert_cmd,
-    "Created OpenSSL Certificate",
-    "Could not create OpenSSL Certificate",
-    1
-)
-
-# Convert the cert to bytes
-try:
-    with open("certificate.pem", "r") as cert:
-        content = cert.read()
-        b_cert = bytes(content, 'utf-8')
-        pretty_print("Certificate converted to bytes")
-except:
-    print("Could not convert certificate to bytes")
-
-# Convert the key to bytes
-try:
-    with open("privkey.pem", "r") as key:
-        content = key.read()
-        priv_key = bytes(content, 'utf-8')
-        pretty_print("Private key converted to bytes")
-except:
-    print("Could not convert Private key to bytes")
-
 # Import the certificate to AWS
 try:
     cert_response = cert_client.import_certificate(
@@ -1459,19 +1424,7 @@ try:
 except:
     pretty_print("Could not create HTTP Target Group")
 
-# Create a HTTPS target group
-try:
-    tg2_response = load_client.create_target_group(
-        Name='assign-https-tg',
-        Protocol='HTTPS',
-        Port=443,
-        VpcId=vpc_id,
-        TargetType='instance'
-    )
-    https_arn = tg2_response['TargetGroups'][0]['TargetGroupArn']
-    pretty_print(f"Created HTTPS Target Group {https_arn}")
-except:
-    pretty_print("Could not create HTTPS Target Group")
+
 
 # Create a HTTP listener
 try:
@@ -1497,33 +1450,20 @@ try:
 except:
     pretty_print("Could not create HTTP Listener")
 
-# Create a HTTPS listener
-try:
-    https_list_response = load_client.create_listener(
-        LoadBalancerArn=lb_arn,
-        Protocol='HTTPS',
-        Port=443,
-        Certificates=[
-            {
-                'CertificateArn': cert_arn,
-            }
-        ],
-        DefaultActions=[
-            {
-                'Type': 'forward',
-                'TargetGroupArn': https_arn
-            }
-        ],
-        Tags=[
-            {
-                'Key': 'Name',
-                'Value': 'HTTPS Listener'
-            }
-        ]
-    )
-    https_list_arn = https_list_response['Listeners'][0]['ListenerArn']
-    pretty_print("Created HTTPS Listener")
-except:
-    pretty_print("Could not create HTTPS Listener")
+
 
 # Create Auto-Scaling Group
+
+auto_response = auto_client.create_auto_scaling_group(
+    AutoScalingGroupName="ASG1",
+    LaunchConfigurationName="web",
+    MinSize=1,
+    MaxSize=3,
+    DefaultCooldown=60,
+    HealthCheckType='ELB',
+    HealthCheckGracePeriod=300,
+    VPCZoneIdentifier=f"{pub_west1a},{pub_west1b},{pub_west1c}",
+    TargetGroupARNs=[http_arn]
+)
+
+#
