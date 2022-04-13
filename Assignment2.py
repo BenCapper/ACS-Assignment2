@@ -63,6 +63,7 @@ ec2_client = boto3.client("ec2")
 auto_client = boto3.client('autoscaling')
 load_client = boto3.client("elbv2")
 cert_client = boto3.client('acm')
+cloud_client = boto3.client('cloudwatch')
 
 string_list = list()
 grp_id = list()
@@ -826,6 +827,7 @@ else:
 # Create a template instance
 
 try:
+    sleep(1)
     create_response = ec2_resource.create_instances(
         ImageId='ami-0069d66985b09d219',
         KeyName=key_name,
@@ -838,6 +840,7 @@ try:
     created_instance = create_response[0]
     inst_id = created_instance.id
     pretty_print(f"Instance {inst_id} created")
+    sleep(1)
     pretty_print(f"Waiting for Instance {inst_id} to become available...")
     created_instance.wait_until_running()
     pretty_print(f"Instance {inst_id} running")
@@ -1257,37 +1260,6 @@ try:
 except:
     pretty_print("Could not create the Launch Configuration")
 
-# Create a security group in Pri subnet with app running on port 3000
-try:
-    vpc_create_response = ec2_resource.create_instances(
-            ImageId=image_id,
-            KeyName=key_name,
-            InstanceType="t2.nano",
-            SecurityGroupIds=web_grp_id,
-            UserData=auto_user_data,
-            MinCount=1,
-            MaxCount=1,
-            SubnetId=pub_west1a,
-            Monitoring={'Enabled': True},
-    )
-    vpc_created_instance = vpc_create_response[0]
-    vpc_inst_id = vpc_created_instance.id
-    pretty_print(f"Instance {vpc_inst_id} created")
-    pretty_print(f"Waiting for Instance {vpc_inst_id} to become available...")
-    vpc_created_instance.wait_until_running()
-    pretty_print(f"Instance {vpc_inst_id} running")
-    vpc_created_instance.reload()
-    vpc_created_instance.wait_until_running()
-    public_ip = vpc_created_instance.public_ip_address
-except:
-    pretty_print("Could not create ec2 instance")
-
-# Test the Vpc infra is correct with HelloWorld web app
-try:
-    webbrowser.open_new_tab(f"http://{public_ip}:3000")
-    pretty_print("Opening Web Browser to Hello World app")
-except:
-    pretty_print("Could not open the Web Browser")
 
 # Create 80/443 Security Group for Load Balancer
 try:
@@ -1393,22 +1365,7 @@ try:
 except:
    pretty_print("Could not find the Load Balancer")
 
-# Import the certificate to AWS
-try:
-    cert_response = cert_client.import_certificate(
-        Certificate=b_cert,
-        PrivateKey=priv_key,
-        Tags=[
-            {
-                'Key': 'Name',
-                'Value': 'LB_Cert'
-            }
-        ]
-    )
-    cert_arn = cert_response['CertificateArn']
-    pretty_print(f"Imported LB Certificate: {cert_arn}")
-except:
-    pretty_print("Could not import LB Certificate")
+
 
 # Create a HTTP target group
 try:
@@ -1451,19 +1408,99 @@ except:
     pretty_print("Could not create HTTP Listener")
 
 
-
 # Create Auto-Scaling Group
 
 auto_response = auto_client.create_auto_scaling_group(
     AutoScalingGroupName="ASG1",
     LaunchConfigurationName="web",
     MinSize=1,
+    DesiredCapacity=2,
     MaxSize=3,
     DefaultCooldown=60,
     HealthCheckType='ELB',
-    HealthCheckGracePeriod=300,
+    HealthCheckGracePeriod=60,
     VPCZoneIdentifier=f"{pub_west1a},{pub_west1b},{pub_west1c}",
-    TargetGroupARNs=[http_arn]
+    TargetGroupARNs=[http_arn],
+    Tags=[
+        {
+            'ResourceType': 'auto-scaling-group',
+            'Key': 'Name',
+            'Value': 'AutoScaled',
+            'PropagateAtLaunch': True
+        }
+    ]
+)
+sleep(30) # Waiting for instance to boot
+find_auto_resp = ec2_client.describe_instances(
+    Filters=[
+        {
+            'Name': 'instance-state-name',
+            'Values': ['running','pending']
+        },
+        {
+            'Name': 'vpc-id',
+            'Values': [vpc_id]
+        },
+    ]
+)
+print(find_auto_resp)
+auto_ids = dict()
+inst_list = list()
+inst_list= find_auto_resp['Reservations'][0]['Instances']
+pretty_print(str(inst_list))
+count = 0
+for instance in inst_list:
+    print(instance)
+    auto_ids[count] = instance['InstanceId']
+    count += 1
+
+
+# Put Upper Scaling Policy
+up_policy_resp = auto_client.put_scaling_policy(
+    AutoScalingGroupName="ASG1",
+    PolicyName="scale-out",
+    PolicyType="SimpleScaling",
+    AdjustmentType="ChangeInCapacity",
+    Cooldown=120,
+    ScalingAdjustment=1
+)
+up_policy_arn = up_policy_resp['PolicyARN']
+
+# Put Lower Scaling Policy
+lo_policy_resp = auto_client.put_scaling_policy(
+    AutoScalingGroupName="ASG1",
+    PolicyName="scale-in",
+    PolicyType="SimpleScaling",
+    AdjustmentType="ChangeInCapacity",
+    Cooldown=120,
+    ScalingAdjustment=-1
+)
+lo_policy_arn = lo_policy_resp['PolicyARN']
+
+# Put Upper Cloudwatch Alarm
+ucw_response = cloud_client.put_metric_alarm(
+    AlarmName='CPUsage',
+    AlarmDescription='High CPU alarm',
+    MetricName='CPUUtilization',
+    Namespace='AWS/EC2',
+    Statistic='Average',
+    Period=60,
+    EvaluationPeriods=2,
+    Threshold=40,
+    ComparisonOperator='GreaterThanThreshold',
+    AlarmActions=[up_policy_arn]
 )
 
-#
+# Put Lower Cloudwatch Alarm
+lcw_response = cloud_client.put_metric_alarm(
+    AlarmName='CPUsage',
+    AlarmDescription='High CPU alarm',
+    MetricName='CPUUtilization',
+    Namespace='AWS/EC2',
+    Statistic='Average',
+    Period=60,
+    EvaluationPeriods=2,
+    Threshold=35,
+    ComparisonOperator='LessThanThreshold',
+    AlarmActions=[lo_policy_arn]
+)
