@@ -54,7 +54,7 @@ def subproc(cmd, pass_str, err_str, sleep_dur, output=None):
 # Create elastic load balancer - done
 # Create an auto scaling group
 # Create open SSL Cert and LB listener - done
-# Configure dynamic scaling policies based on cloudwatch alarms
+# Configure dynamic scaling policies based on cloudwatch alarms - done
 # Test traffic to load balancer
 
 region = "eu-west-1"
@@ -70,6 +70,8 @@ grp_id = list()
 web_grp_id = list()
 db_grp_id = list()
 lb_grp_id = list()
+inst_list = list()
+auto_ids = dict()
 key_name_list = ["assign_two"]
 key_file_name = "assign_two.pem"
 sec_grp = "assign_two"
@@ -124,6 +126,8 @@ https_arn = ""
 http_list_arn = ""
 https_list_arn = ""
 lb_sec_id = ""
+port3000_arn = ""
+port_list_arn = ""
 
 tag = {"Key": "Name", "Value": "Master Web Server - Assign Two"}
 
@@ -201,13 +205,27 @@ try:
         VpcId = vpc_id,
     )
     pub_west1a = subnet_response['Subnet']['SubnetId']
-    attr_response = ec2_client.modify_subnet_attribute(
-        SubnetId=pub_west1a,
-        MapPublicIpOnLaunch={'Value':True}
-    )
     pretty_print(f"Created Public Subnet EU-WEST-1A: {pub_west1a}")
 except:
     pretty_print(f"Could not create Public Subnet EU-WEST-1A")
+
+try:
+    attr_response = ec2_client.modify_subnet_attribute(
+        SubnetId=pub_west1a,
+        MapPublicIpOnLaunch={'Value':True},
+    )
+    pretty_print("Modified Subnet Attribute: Map Public Ip on Launch")
+except:
+    pretty_print("Could not modify Subnet Attribute: Map Public Ip on Launch")
+
+try:
+    attr_response = ec2_client.modify_subnet_attribute(
+        SubnetId=pub_west1a,
+        EnableResourceNameDnsARecordOnLaunch={'Value': True}
+    )
+    pretty_print("Modified Subnet Attribute: Enable RBN on Launch")
+except:
+    pretty_print("Could not modify Subnet Attribute: Enable RBN on Launch")
 
 # Create Public Subnet 2
 try:
@@ -229,13 +247,27 @@ try:
         VpcId = vpc_id,
     )
     pub_west1b = subnet_response['Subnet']['SubnetId']
-    attr_response = ec2_client.modify_subnet_attribute(
-        SubnetId=pub_west1b,
-        MapPublicIpOnLaunch={'Value':True}
-    )
     pretty_print(f"Created Public Subnet EU-WEST-1B: {pub_west1b}")
 except:
     pretty_print(f"Could not create Public Subnet EU-WEST-1B")
+
+try:
+    attr_response = ec2_client.modify_subnet_attribute(
+        SubnetId=pub_west1b,
+        MapPublicIpOnLaunch={'Value':True},
+    )
+    pretty_print("Modified Subnet Attribute: Map Public Ip on Launch")
+except:
+    pretty_print("Could not modify Subnet Attribute: Map Public Ip on Launch")
+
+try:
+    attr_response = ec2_client.modify_subnet_attribute(
+        SubnetId=pub_west1b,
+        EnableResourceNameDnsARecordOnLaunch={'Value': True}
+    )
+    pretty_print("Modified Subnet Attribute: Enable RBN on Launch")
+except:
+    pretty_print("Could not modify Subnet Attribute: Enable RBN on Launch")
 
 # Create Public Subnet 3
 try:
@@ -257,13 +289,27 @@ try:
         VpcId = vpc_id,
     )
     pub_west1c = subnet_response['Subnet']['SubnetId']
-    attr_response = ec2_client.modify_subnet_attribute(
-        SubnetId=pub_west1c,
-        MapPublicIpOnLaunch={'Value':True}
-    )
     pretty_print(f"Created Public Subnet EU-WEST-1C: {pub_west1c}")
 except:
     pretty_print(f"Could not create Public Subnet EU-WEST-1C")
+
+try:
+    attr_response = ec2_client.modify_subnet_attribute(
+        SubnetId=pub_west1c,
+        MapPublicIpOnLaunch={'Value':True},
+    )
+    pretty_print("Modified Subnet Attribute: Map Public Ip on Launch")
+except:
+    pretty_print("Could not modify Subnet Attribute: Map Public Ip on Launch")
+
+try:
+    attr_response = ec2_client.modify_subnet_attribute(
+        SubnetId=pub_west1c,
+        EnableResourceNameDnsARecordOnLaunch={'Value': True}
+    )
+    pretty_print("Modified Subnet Attribute: Enable RBN on Launch")
+except:
+    pretty_print("Could not modify Subnet Attribute: Enable RBN on Launch")
 
 # Create Private Subnet 1
 try:
@@ -836,10 +882,15 @@ try:
         MinCount=1,
         MaxCount=1,
         Monitoring={'Enabled': True},
+        PrivateDnsNameOptions={'EnableResourceNameDnsARecord': True}
     )
     created_instance = create_response[0]
     inst_id = created_instance.id
     pretty_print(f"Instance {inst_id} created")
+except:
+    pretty_print("Could not create the ec2 Instance")
+
+try:
     sleep(1)
     pretty_print(f"Waiting for Instance {inst_id} to become available...")
     created_instance.wait_until_running()
@@ -848,8 +899,7 @@ try:
     created_instance.wait_until_running()
     public_ip = created_instance.public_ip_address
 except:
-    pretty_print("Could not create the ec2 Instance")
-
+    pretty_print("Instance did not start running")
 
 # Set Keypair permissions
 subproc(
@@ -863,8 +913,9 @@ subproc(
 command_list = '''
 sudo yum install httpd -y; sudo systemctl enable httpd; sudo systemctl start httpd;
 sudo touch index.html; sudo chmod 777 index.html; sudo echo "<b>Assignment Two Index</b> " >> index.html;
-sudo chmod 400 index.html;
-sudo cp index.html /var/www/html/index.html
+sudo echo 'Subnet: ' >> index.html; MAC=$(curl http://169.254.169.254/latest/meta-data/mac);
+sudo curl http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC}/subnet-id >> index.html;
+sudo cp index.html /var/www/html/index.html; sudo chmod 755 -R /var/www
 '''
 ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '{command_list}'"
 result = subproc(
@@ -874,7 +925,7 @@ result = subproc(
     2,
     True
 )
-print(result)
+
 # First ssh attempt failed, keep trying
 while result.returncode != 0:
     pretty_print("Failed ssh attempt, trying again...")
@@ -885,7 +936,7 @@ while result.returncode != 0:
     2,
     True
 )
-print(result)
+
 # SSH into instance and install the web app
 command_list = '''
 sudo yum update -y ; curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.37.1/install.sh | bash;
@@ -900,7 +951,7 @@ result = subproc(
     True
 )
 
-sleep(20)
+sleep(5)
 
 # Create an image from the instance
 try:
@@ -1286,17 +1337,19 @@ if lb_grp_id:
     pretty_print(f"Using the security group: {lb_sec_grp}")
 # lb_id is empty, create new security group
 else:
-    sleep(1)
-    lb_grp_resp = ec2_resource.create_security_group(
-        GroupName=lb_sec_grp,
-        VpcId=vpc_id,
-        Description=lb_sec_grp
-    )
-    lb_sec_id = lb_grp_resp.id
-    pretty_print(f"Created the security group: {lb_sec_grp}")
-
-        #pretty_print(f"Could not create the security group: {lb_sec_grp}")
     try:
+        sleep(1)
+        lb_grp_resp = ec2_resource.create_security_group(
+            GroupName=lb_sec_grp,
+            VpcId=vpc_id,
+            Description=lb_sec_grp
+        )
+        lb_sec_id = lb_grp_resp.id
+        pretty_print(f"Created the security group: {lb_sec_grp}")
+    except:
+        pretty_print(f"Could not create the security group: {lb_sec_grp}")
+    try:
+        sleep(1)
         waiter = ec2_client.get_waiter('security_group_exists')
         pretty_print("Waiting for the Security Group to become available")
         waiter.wait(GroupIds=[lb_sec_id])
@@ -1313,12 +1366,20 @@ else:
                         "ToPort": 80,
                         "IpProtocol": "tcp",
                         "IpRanges": [
-                            {"CidrIp": "0.0.0.0/0", "Description": "ssh"},
+                            {"CidrIp": "0.0.0.0/0", "Description": "http"},
                         ],
                     },
                     {
                         "FromPort": 443,
                         "ToPort": 443,
+                        "IpProtocol": "tcp",
+                        "IpRanges": [
+                            {"CidrIp": "0.0.0.0/0", "Description": "https"},
+                        ],
+                    },
+                    {
+                        "FromPort": 3000,
+                        "ToPort": 3000,
                         "IpProtocol": "tcp",
                         "IpRanges": [
                             {"CidrIp": "0.0.0.0/0", "Description": "port3000"},
@@ -1332,25 +1393,26 @@ else:
 
 
 # Create an Application Load Balancer for 3 public subnets
-
-lb_response = load_client.create_load_balancer(
-    Name='assignment-two',
-    Subnets=[
-        pub_west1a,
-        pub_west1b,
-        pub_west1c
-    ],
-    SecurityGroups=[lb_sec_id],
-    Type='application'
-)
-lb_arn = lb_response['LoadBalancers'][0]['LoadBalancerArn']
-lb_dns = lb_response['LoadBalancers'][0]['DNSName']
-pretty_print(f"Created Application Load Balancer in Public Subnets {pub_west1a}, {pub_west1b}, {pub_west1c}")
-
-   #pretty_print("Could not create the Application Load Balancer")
+try:
+    lb_response = load_client.create_load_balancer(
+        Name='assignment-two',
+        Subnets=[
+            pub_west1a,
+            pub_west1b,
+            pub_west1c
+        ],
+        SecurityGroups=[lb_sec_id],
+        Type='application'
+    )
+    lb_arn = lb_response['LoadBalancers'][0]['LoadBalancerArn']
+    lb_dns = lb_response['LoadBalancers'][0]['DNSName']
+    pretty_print(f"Created Application Load Balancer in Public Subnets {pub_west1a}, {pub_west1b}, {pub_west1c}")
+except:
+    pretty_print("Could not create the Application Load Balancer")
 
 # Wait for the LB to exist
 try:
+   sleep(1)
    load_waiter = load_client.get_waiter('load_balancer_exists')
    pretty_print("Waiting for the Load Balancer to exist")
    load_waiter.wait(Names=['assignment-two'])
@@ -1359,16 +1421,18 @@ except:
 
 # Wait for the LB to become available
 try:
-   load_waiter = load_client.get_waiter('load_balancer_available')
-   pretty_print("Waiting for the Load Balancer to become available")
-   load_waiter.wait(Names=['assignment-two'])
+    sleep(1)
+    load_waiter = load_client.get_waiter('load_balancer_available')
+    pretty_print("Waiting for the Load Balancer to become available")
+    load_waiter.wait(Names=['assignment-two'])
 except:
-   pretty_print("Could not find the Load Balancer")
+    pretty_print("Could not find the Load Balancer")
 
 
 
 # Create a HTTP target group
 try:
+    sleep(1)
     tg_response = load_client.create_target_group(
         Name='assign-http-tg',
         Protocol='HTTP',
@@ -1381,10 +1445,9 @@ try:
 except:
     pretty_print("Could not create HTTP Target Group")
 
-
-
 # Create a HTTP listener
 try:
+    sleep(1)
     http_list_response = load_client.create_listener(
         LoadBalancerArn=lb_arn,
         Protocol='HTTP',
@@ -1407,36 +1470,147 @@ try:
 except:
     pretty_print("Could not create HTTP Listener")
 
+try:
+    sleep(1)
+    tg_response = load_client.create_target_group(
+        Name='assign-3000-tg',
+        Protocol='HTTP',
+        Port=3000,
+        VpcId=vpc_id,
+        TargetType='instance'
+    )
+    port3000_arn = tg_response['TargetGroups'][0]['TargetGroupArn']
+    pretty_print(f"Created Port3000 Target Group {port3000_arn}")
+except:
+    pretty_print("Could not create Port3000 Target Group")
+
+
+
+# Create a Port3000 listener
+try:
+    sleep(1)
+    http_list_response = load_client.create_listener(
+        LoadBalancerArn=lb_arn,
+        Protocol='HTTP',
+        Port=3000,
+        DefaultActions=[
+            {
+                'Type': 'forward',
+                'TargetGroupArn': port3000_arn
+            }
+        ],
+        Tags=[
+            {
+                'Key': 'Name',
+                'Value': 'Port3000 Listener'
+            }
+        ]
+    )
+    port_list_arn = http_list_response['Listeners'][0]['ListenerArn']
+    pretty_print("Created HTTP Listener")
+except:
+    pretty_print("Could not create HTTP Listener")
 
 # Create Auto-Scaling Group
+try:
+    sleep(1)
+    auto_response = auto_client.create_auto_scaling_group(
+        AutoScalingGroupName="ASG1",
+        LaunchConfigurationName="web",
+        MinSize=1,
+        DesiredCapacity=2,
+        MaxSize=3,
+        DefaultCooldown=60,
+        HealthCheckType='ELB',
+        HealthCheckGracePeriod=60,
+        VPCZoneIdentifier=f"{pub_west1a},{pub_west1b},{pub_west1c}",
+        TargetGroupARNs=[http_arn, port3000_arn],
+        Tags=[
+            {
+                'ResourceType': 'auto-scaling-group',
+                'Key': 'Name',
+                'Value': 'AutoScaled',
+                'PropagateAtLaunch': True
+            }
+        ]
+    )
+    pretty_print(f"Created Auto Scaling Group")
+except:
+    pretty_print(f"Could not create Auto Scaling Group")
 
-auto_response = auto_client.create_auto_scaling_group(
-    AutoScalingGroupName="ASG1",
-    LaunchConfigurationName="web",
-    MinSize=1,
-    DesiredCapacity=2,
-    MaxSize=3,
-    DefaultCooldown=60,
-    HealthCheckType='ELB',
-    HealthCheckGracePeriod=60,
-    VPCZoneIdentifier=f"{pub_west1a},{pub_west1b},{pub_west1c}",
-    TargetGroupARNs=[http_arn],
-    Tags=[
-        {
-            'ResourceType': 'auto-scaling-group',
-            'Key': 'Name',
-            'Value': 'AutoScaled',
-            'PropagateAtLaunch': True
-        }
-    ]
-)
-sleep(30) # Waiting for instance to boot
+# Put Upper Scaling Policy
+try:
+    sleep(1)
+    up_policy_resp = auto_client.put_scaling_policy(
+        AutoScalingGroupName="ASG1",
+        PolicyName="scale-out",
+        PolicyType="SimpleScaling",
+        AdjustmentType="ChangeInCapacity",
+        Cooldown=120,
+        ScalingAdjustment=1
+    )
+    up_policy_arn = up_policy_resp['PolicyARN']
+    pretty_print(f"Created Scale-Out Policy: {up_policy_arn}")
+except:
+    pretty_print(f"Could not create Scale-Out Policy: {up_policy_arn}")
+
+# Put Upper Cloudwatch Alarm
+try:
+    sleep(1)
+    ucw_response = cloud_client.put_metric_alarm(
+        AlarmName='CPUsageH',
+        AlarmDescription='High CPU alarm',
+        MetricName='CPUUtilization',
+        Namespace='AWS/EC2',
+        Statistic='Average',
+        Period=60,
+        EvaluationPeriods=2,
+        Threshold=60,
+        ComparisonOperator='GreaterThanThreshold',
+        AlarmActions=[up_policy_arn]
+    )
+    pretty_print(f"Created High CPU Usage Alarm")
+except:
+    pretty_print(f"Could not create High CPU Usage Alarm")
+
+# Put Lower Scaling Policy
+try:
+    sleep(1)
+    lo_policy_resp = auto_client.put_scaling_policy(
+        AutoScalingGroupName="ASG1",
+        PolicyName="scale-in",
+        PolicyType="SimpleScaling",
+        AdjustmentType="ChangeInCapacity",
+        Cooldown=120,
+        ScalingAdjustment=-1
+    )
+    lo_policy_arn = lo_policy_resp['PolicyARN']
+    pretty_print(f"Created Scale-In Policy: {lo_policy_arn}")
+except:
+    pretty_print(f"Could not create Scale-In Policy: {lo_policy_arn}")
+
+# Put Lower Cloudwatch Alarm
+try:
+    sleep(1)
+    lcw_response = cloud_client.put_metric_alarm(
+        AlarmName='CPUsageL',
+        AlarmDescription='Low CPU alarm',
+        MetricName='CPUUtilization',
+        Namespace='AWS/EC2',
+        Statistic='Average',
+        Period=60,
+        EvaluationPeriods=2,
+        Threshold=25,
+        ComparisonOperator='LessThanThreshold',
+        AlarmActions=[lo_policy_arn]
+    )
+    pretty_print(f"Created Low CPU Usage Alarm")
+except:
+    pretty_print(f"Could not create Low CPU Usage Alarm")
+
+sleep(180)
 find_auto_resp = ec2_client.describe_instances(
     Filters=[
-        {
-            'Name': 'instance-state-name',
-            'Values': ['running','pending']
-        },
         {
             'Name': 'vpc-id',
             'Values': [vpc_id]
@@ -1444,63 +1618,44 @@ find_auto_resp = ec2_client.describe_instances(
     ]
 )
 print(find_auto_resp)
-auto_ids = dict()
-inst_list = list()
-inst_list= find_auto_resp['Reservations'][0]['Instances']
-pretty_print(str(inst_list))
-count = 0
-for instance in inst_list:
-    print(instance)
-    auto_ids[count] = instance['InstanceId']
-    count += 1
+print()
+print()
+inst_1= find_auto_resp['Reservations'][0]['Instances'][0]['PublicIpAddress']
+inst_2= find_auto_resp['Reservations'][1]['Instances'][0]['PublicIpAddress']
+pretty_print(inst_1)
+pretty_print(inst_2)
 
 
-# Put Upper Scaling Policy
-up_policy_resp = auto_client.put_scaling_policy(
-    AutoScalingGroupName="ASG1",
-    PolicyName="scale-out",
-    PolicyType="SimpleScaling",
-    AdjustmentType="ChangeInCapacity",
-    Cooldown=120,
-    ScalingAdjustment=1
+curl_cmd = f'''
+curl -s "http://{lb_dns}/?[1-100]";
+'''
+result = subproc(
+    curl_cmd,
+    "Sent curl requests to the Load Balancer",
+    "Could not send curl requests to the Load Balancer",
+    2,
+    True
 )
-up_policy_arn = up_policy_resp['PolicyARN']
-
-# Put Lower Scaling Policy
-lo_policy_resp = auto_client.put_scaling_policy(
-    AutoScalingGroupName="ASG1",
-    PolicyName="scale-in",
-    PolicyType="SimpleScaling",
-    AdjustmentType="ChangeInCapacity",
-    Cooldown=120,
-    ScalingAdjustment=-1
+sleep(10)
+access_log_cmd=f'''
+sudo cat /etc/httpd/logs/access_log
+'''
+ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_1} '{access_log_cmd}'"
+result = subproc(
+    ssh_command,
+    "Checking Access Logs",
+    "Could not check Access Logs",
+    2,
+    True
 )
-lo_policy_arn = lo_policy_resp['PolicyARN']
+pretty_print(str(result.stdout))
 
-# Put Upper Cloudwatch Alarm
-ucw_response = cloud_client.put_metric_alarm(
-    AlarmName='CPUsage',
-    AlarmDescription='High CPU alarm',
-    MetricName='CPUUtilization',
-    Namespace='AWS/EC2',
-    Statistic='Average',
-    Period=60,
-    EvaluationPeriods=2,
-    Threshold=40,
-    ComparisonOperator='GreaterThanThreshold',
-    AlarmActions=[up_policy_arn]
+ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_2} '{access_log_cmd}'"
+result = subproc(
+    ssh_command,
+    "Checking Access Logs",
+    "Could not check Access Logs",
+    2,
+    True
 )
-
-# Put Lower Cloudwatch Alarm
-lcw_response = cloud_client.put_metric_alarm(
-    AlarmName='CPUsage',
-    AlarmDescription='High CPU alarm',
-    MetricName='CPUUtilization',
-    Namespace='AWS/EC2',
-    Statistic='Average',
-    Period=60,
-    EvaluationPeriods=2,
-    Threshold=35,
-    ComparisonOperator='LessThanThreshold',
-    AlarmActions=[lo_policy_arn]
-)
+pretty_print(str(result.stdout))
