@@ -913,9 +913,7 @@ subproc(
 command_list = '''
 sudo yum install httpd -y; sudo systemctl enable httpd; sudo systemctl start httpd;
 sudo touch index.html; sudo chmod 777 index.html; sudo echo "<b>Assignment Two Index</b> " >> index.html;
-sudo echo 'Subnet: ' >> index.html; MAC=$(curl http://169.254.169.254/latest/meta-data/mac);
-sudo curl http://169.254.169.254/latest/meta-data/network/interfaces/macs/${MAC}/subnet-id >> index.html;
-sudo cp index.html /var/www/html/index.html; sudo chmod 755 -R /var/www
+sudo cp index.html /var/www/html/index.html; sudo chmod 755 -R /var/www;
 '''
 ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '{command_list}'"
 result = subproc(
@@ -1517,7 +1515,7 @@ try:
     auto_response = auto_client.create_auto_scaling_group(
         AutoScalingGroupName="ASG1",
         LaunchConfigurationName="web",
-        MinSize=1,
+        MinSize=2,
         DesiredCapacity=2,
         MaxSize=3,
         DefaultCooldown=60,
@@ -1564,8 +1562,8 @@ try:
         Namespace='AWS/EC2',
         Statistic='Average',
         Period=60,
-        EvaluationPeriods=2,
-        Threshold=60,
+        EvaluationPeriods=3,
+        Threshold=70,
         ComparisonOperator='GreaterThanThreshold',
         AlarmActions=[up_policy_arn]
     )
@@ -1600,7 +1598,7 @@ try:
         Statistic='Average',
         Period=60,
         EvaluationPeriods=2,
-        Threshold=25,
+        Threshold=30,
         ComparisonOperator='LessThanThreshold',
         AlarmActions=[lo_policy_arn]
     )
@@ -1608,7 +1606,7 @@ try:
 except:
     pretty_print(f"Could not create Low CPU Usage Alarm")
 
-sleep(180)
+sleep(240)
 find_auto_resp = ec2_client.describe_instances(
     Filters=[
         {
@@ -1643,7 +1641,7 @@ sudo cat /etc/httpd/logs/access_log
 ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_1} '{access_log_cmd}'"
 result = subproc(
     ssh_command,
-    "Checking Access Logs",
+    "Revrieved Access Logs",
     "Could not check Access Logs",
     2,
     True
@@ -1653,9 +1651,56 @@ pretty_print(str(result.stdout))
 ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_2} '{access_log_cmd}'"
 result = subproc(
     ssh_command,
-    "Checking Access Logs",
+    "Retrieved Access Logs",
     "Could not check Access Logs",
     2,
     True
 )
 pretty_print(str(result.stdout))
+
+# Secure copy monitor script onto instance
+subproc(
+    f"scp -o StrictHostKeyChecking=no -i {key_file_name} monitor.sh ec2-user@{inst_1}:.",
+    "Monitor script copied onto ec2 instance",
+    "Monitor script was not copied onto ec2 instance",
+    2,
+)
+
+# Secure copy aws credentials onto instance
+subproc(
+    f"scp -o StrictHostKeyChecking=no -i {key_file_name} ~/.aws. ec2-user@{inst_1}:~/",
+    "AWS credentials copied onto ec2 instance",
+    "AWS credentials was not copied onto ec2 instance",
+    2,
+)
+
+# Set monitor permissions
+subproc(
+    f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_1} 'chmod 700 monitor.sh'",
+    "Monitor script permissions set",
+    "Monitor script permissions were not set",
+    2,
+)
+
+# Execute monitor script
+permiss_cmd = f"""ssh -o StrictHostKeyChecking=no -i {key_name}.pem ec2-user@{inst_1} 'echo ------------------------------------------------------;
+echo Executing monitor.sh ; 
+echo ------------------------------------------------------;
+echo                            ; 
+./monitor.sh'
+"""
+subproc(
+    permiss_cmd,
+    "Monitor.sh executed successfully",
+    "Could not execute Monitor.sh",
+    2
+)
+
+try:
+    time.sleep(2)
+    webbrowser.open_new_tab(f"http://{lb_dns}")
+    webbrowser.open_new_tab(f"http://{lb_dns}:3000")
+
+    pretty_print("Browser opened")
+except:
+    pretty_print("Could not open the browser")
