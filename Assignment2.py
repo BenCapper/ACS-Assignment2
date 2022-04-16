@@ -45,18 +45,6 @@ def subproc(cmd, pass_str, err_str, sleep_dur, output=None):
             pretty_print(err_str)
 
 
-# Create VPC - done
-# Create master web server - done
-# Make into image - done
-# Create security groups in vpc - done
-# Create instance from template into subnet - done
-# Create launch config based on custom template - done
-# Create elastic load balancer - done
-# Create an auto scaling group
-# Create open SSL Cert and LB listener - done
-# Configure dynamic scaling policies based on cloudwatch alarms - done
-# Test traffic to load balancer
-
 region = "eu-west-1"
 ec2_resource = boto3.resource("ec2")
 ec2_client = boto3.client("ec2")
@@ -72,6 +60,7 @@ db_grp_id = list()
 lb_grp_id = list()
 inst_list = list()
 auto_ids = dict()
+passwd = "acspassword"
 key_name_list = ["assign_two"]
 key_file_name = "assign_two.pem"
 sec_grp = "assign_two"
@@ -1426,8 +1415,6 @@ try:
 except:
     pretty_print("Could not find the Load Balancer")
 
-
-
 # Create a HTTP target group
 try:
     sleep(1)
@@ -1468,6 +1455,7 @@ try:
 except:
     pretty_print("Could not create HTTP Listener")
 
+# Create port3000 target group
 try:
     sleep(1)
     tg_response = load_client.create_target_group(
@@ -1481,8 +1469,6 @@ try:
     pretty_print(f"Created Port3000 Target Group {port3000_arn}")
 except:
     pretty_print("Could not create Port3000 Target Group")
-
-
 
 # Create a Port3000 listener
 try:
@@ -1505,9 +1491,117 @@ try:
         ]
     )
     port_list_arn = http_list_response['Listeners'][0]['ListenerArn']
-    pretty_print("Created HTTP Listener")
+    pretty_print("Created 3000 Listener")
 except:
-    pretty_print("Could not create HTTP Listener")
+    pretty_print("Could not create 3000 Listener")
+
+openssl_cmd = f'echo "{passwd}" | sudo -S dnf install openssl -y'
+cert_cmd=f'''
+openssl \
+  req \
+  -newkey rsa:2048 -nodes \
+  -keyout privkey.pem \
+  -x509 -days 36500 -out certificate.pem \
+  -subj "/C=IE/ST=WX/L=Earth/O=WIT/OU=SSD/CN={lb_dns}"
+'''
+# Installs OpenSSL
+subproc(
+    openssl_cmd,
+    "Installed OpenSSL locally",
+    "Could not install OpenSSL, already installed or incorrect password",
+    1
+)
+
+# Create cert for the LB
+subproc(
+    cert_cmd,
+    "Created OpenSSL Certificate",
+    "Could not create OpenSSL Certificate",
+    1
+)
+
+# Convert the cert to bytes
+try:
+    sleep(1)
+    with open("certificate.pem", "r") as cert:
+        content = cert.read()
+        b_cert = bytes(content, 'utf-8')
+        pretty_print("Certificate converted to bytes")
+except:
+    print("Could not convert certificate to bytes")
+
+# Convert the key to bytes
+try:
+    sleep(1)
+    with open("privkey.pem", "r") as key:
+        content = key.read()
+        priv_key = bytes(content, 'utf-8')
+        pretty_print("Private key converted to bytes")
+except:
+    print("Could not convert Private key to bytes")
+
+# Import the certificate to AWS
+try:
+    sleep(1)
+    cert_response = cert_client.import_certificate(
+        Certificate=b_cert,
+        PrivateKey=priv_key,
+        Tags=[
+            {
+                'Key': 'Name',
+                'Value': 'LB_Cert'
+            }
+        ]
+    )
+    cert_arn = cert_response['CertificateArn']
+    pretty_print(f"Imported LB Certificate: {cert_arn}")
+except:
+    pretty_print("Could not import LB Certificate")
+
+# Create a HTTPS target group
+try:
+    sleep(1)
+    tg2_response = load_client.create_target_group(
+        Name='assign-https-tg',
+        Protocol='HTTPS',
+        Port=443,
+        VpcId=vpc_id,
+        TargetType='instance'
+    )
+    https_arn = tg2_response['TargetGroups'][0]['TargetGroupArn']
+    pretty_print(f"Created HTTPS Target Group {https_arn}")
+except:
+    pretty_print("Could not create HTTPS Target Group")
+
+# Create a HTTPS listener
+try:
+    sleep(1)
+    https_list_response = load_client.create_listener(
+        LoadBalancerArn=lb_arn,
+        Protocol='HTTPS',
+        Port=443,
+        Certificates=[
+            {
+                'CertificateArn': cert_arn,
+            }
+        ],
+        DefaultActions=[
+            {
+                'Type': 'forward',
+                'TargetGroupArn': https_arn
+            }
+        ],
+        Tags=[
+            {
+                'Key': 'Name',
+                'Value': 'HTTPS Listener'
+            }
+        ]
+    )
+    https_list_arn = https_list_response['Listeners'][0]['ListenerArn']
+    pretty_print("Created HTTPS Listener")
+except:
+    pretty_print("Could not create HTTPS Listener")
 
 # Create Auto-Scaling Group
 try:
@@ -1522,7 +1616,7 @@ try:
         HealthCheckType='ELB',
         HealthCheckGracePeriod=60,
         VPCZoneIdentifier=f"{pub_west1a},{pub_west1b},{pub_west1c}",
-        TargetGroupARNs=[http_arn, port3000_arn],
+        TargetGroupARNs=[http_arn, port3000_arn, https_arn],
         Tags=[
             {
                 'ResourceType': 'auto-scaling-group',
@@ -1606,7 +1700,9 @@ try:
 except:
     pretty_print(f"Could not create Low CPU Usage Alarm")
 
-sleep(240)
+sleep(140)
+
+# Get instance ids
 find_auto_resp = ec2_client.describe_instances(
     Filters=[
         {
@@ -1615,9 +1711,7 @@ find_auto_resp = ec2_client.describe_instances(
         },
     ]
 )
-print(find_auto_resp)
-print()
-print()
+
 inst_1= find_auto_resp['Reservations'][0]['Instances'][0]['PublicIpAddress']
 inst_2= find_auto_resp['Reservations'][1]['Instances'][0]['PublicIpAddress']
 pretty_print(inst_1)
@@ -1627,6 +1721,7 @@ pretty_print(inst_2)
 curl_cmd = f'''
 curl -s "http://{lb_dns}/?[1-100]";
 '''
+# Send 100 requests to the Load Balancer
 result = subproc(
     curl_cmd,
     "Sent curl requests to the Load Balancer",
@@ -1634,10 +1729,12 @@ result = subproc(
     2,
     True
 )
+
 sleep(10)
 access_log_cmd=f'''
 sudo cat /etc/httpd/logs/access_log
 '''
+# Get access log for instance 1
 ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_1} '{access_log_cmd}'"
 result = subproc(
     ssh_command,
@@ -1648,6 +1745,7 @@ result = subproc(
 )
 pretty_print(str(result.stdout))
 
+# Get access log for instance 2
 ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_2} '{access_log_cmd}'"
 result = subproc(
     ssh_command,
@@ -1668,7 +1766,7 @@ subproc(
 
 # Secure copy aws credentials onto instance
 subproc(
-    f"scp -o StrictHostKeyChecking=no -i {key_file_name} ~/.aws. ec2-user@{inst_1}:~/",
+    f"scp -rp -o StrictHostKeyChecking=no -i {key_file_name} ~/.aws ec2-user@{inst_1}:~/",
     "AWS credentials copied onto ec2 instance",
     "AWS credentials was not copied onto ec2 instance",
     2,
@@ -1696,9 +1794,11 @@ subproc(
     2
 )
 
+# Open Web Browser
 try:
     time.sleep(2)
     webbrowser.open_new_tab(f"http://{lb_dns}")
+    webbrowser.open_new_tab(f"https://{lb_dns}:3000")
     webbrowser.open_new_tab(f"http://{lb_dns}:3000")
 
     pretty_print("Browser opened")
