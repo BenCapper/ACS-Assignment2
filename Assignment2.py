@@ -61,6 +61,7 @@ lb_grp_id = list()
 inst_list = list()
 auto_ids = dict()
 passwd = "acspassword"
+install_cmd = "sudo -S dnf install openssl -y"
 key_name_list = ["assign_two"]
 key_file_name = "assign_two.pem"
 sec_grp = "assign_two"
@@ -125,7 +126,6 @@ if os.path.exists(log_name):
     # Delete
     subproc(f"rm -f {log_name}", "Deleted old log file", "No old log file found", 1)
 
-#Create s3 endpoint with private subnet route tables
 
 # Create Vpc
 try:
@@ -725,6 +725,7 @@ try:
 except:
     pretty_print("Could not create the VPC Endpoints")
 
+# Set DHCP Options
 try:
     dhcp_response = ec2_client.associate_dhcp_options(
         DhcpOptionsId='dopt-ab9acdcd',
@@ -860,7 +861,6 @@ else:
             pretty_print(f"Could not create the security group: {sec_grp}")
 
 # Create a template instance
-
 try:
     sleep(1)
     create_response = ec2_resource.create_instances(
@@ -1023,15 +1023,7 @@ try:
 except:
     pretty_print("Could not find the AMI image")
 
-# Terminate the template instance
-#try:
-#    sleep(1)
-#    term_response = ec2_client.terminate_instances(
-#        InstanceIds=[created_instance.id]
-#    )
-#    pretty_print(f"Terminated the instance: {inst_id}")
-#except:
-#    pretty_print(f"Could not terminate the instance: {inst_id}")
+
 
 # Create the Web App security group
 try:
@@ -1326,6 +1318,7 @@ else:
 auto_user_data = '''
 #!/bin/bash
 INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id);
+(crontab -l ; echo "*/1 * * * * /home/ec2-user/monitor.sh") | crontab -;
 su - ec2-user -c 'node app.js'
 '''
 # Create a Launch configuration based on the image
@@ -1541,7 +1534,7 @@ try:
 except:
     pretty_print("Could not create 3000 Listener")
 
-openssl_cmd = f'echo "{passwd}" | sudo -S dnf install openssl -y'
+openssl_cmd = f'echo "{passwd}" | {install_cmd}'
 cert_cmd=f'''
 openssl \
   req \
@@ -1681,7 +1674,7 @@ try:
     up_policy_resp = auto_client.put_scaling_policy(
         AutoScalingGroupName="ASG1",
         PolicyName="scale-out",
-        PolicyType="SimpleScaling",
+        PolicyType="StepScaling",
         AdjustmentType="ChangeInCapacity",
         Cooldown=120,
         ScalingAdjustment=1
@@ -1702,7 +1695,7 @@ try:
         Statistic='Average',
         Period=60,
         EvaluationPeriods=2,
-        Threshold=70,
+        Threshold=60,
         ComparisonOperator='GreaterThanThreshold',
         AlarmActions=[up_policy_arn]
     )
@@ -1716,7 +1709,7 @@ try:
     lo_policy_resp = auto_client.put_scaling_policy(
         AutoScalingGroupName="ASG1",
         PolicyName="scale-in",
-        PolicyType="SimpleScaling",
+        PolicyType="StepScaling",
         AdjustmentType="ChangeInCapacity",
         Cooldown=120,
         ScalingAdjustment=-1
@@ -1737,7 +1730,7 @@ try:
         Statistic='Average',
         Period=60,
         EvaluationPeriods=2,
-        Threshold=30,
+        Threshold=25,
         ComparisonOperator='LessThanThreshold',
         AlarmActions=[lo_policy_arn]
     )
