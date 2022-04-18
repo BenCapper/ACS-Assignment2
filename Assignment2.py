@@ -938,6 +938,40 @@ result = subproc(
     True
 )
 
+# Secure copy monitor script onto instance
+subproc(
+    f"scp -o StrictHostKeyChecking=no -i {key_file_name} monitor.sh ec2-user@{public_ip}:.",
+    "Monitor script copied onto ec2 instance",
+    "Monitor script was not copied onto ec2 instance",
+    2,
+)
+
+# Secure copy aws credentials onto instance
+subproc(
+    f"scp -rp -o StrictHostKeyChecking=no -i {key_file_name} ~/.aws ec2-user@{public_ip}:~/",
+    "AWS credentials copied onto ec2 instance",
+    "AWS credentials was not copied onto ec2 instance",
+    2,
+)
+
+# Set monitor permissions
+subproc(
+    f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} 'chmod 700 monitor.sh'",
+    "Monitor script permissions set",
+    "Monitor script permissions were not set",
+    2,
+)
+
+# Execute monitor script
+permiss_cmd = f"""ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '(crontab -l ; echo "*/1 * * * * /home/ec2-user/monitor.sh") | crontab -'
+"""
+subproc(
+    permiss_cmd,
+    "Cronjob created for Monitor.sh",
+    "Could not create cronjob for Monitor.sh",
+    2
+)
+
 sleep(5)
 
 # Create an image from the instance
@@ -947,6 +981,17 @@ try:
         Description=sec_grp,
         InstanceId=inst_id,
         Name=sec_grp,
+            TagSpecifications=[
+        {
+            'ResourceType': 'image',
+            'Tags': [
+                {
+                    'Key': 'Name',
+                    'Value': 'assign_two'
+                },
+            ]
+        },
+    ]
     )
     image_id=image_response['ImageId']
     pretty_print(f"Created AMI Image: {image_id}")
@@ -979,14 +1024,14 @@ except:
     pretty_print("Could not find the AMI image")
 
 # Terminate the template instance
-try:
-    sleep(1)
-    term_response = ec2_client.terminate_instances(
-        InstanceIds=[created_instance.id]
-    )
-    pretty_print(f"Terminated the instance: {inst_id}")
-except:
-    pretty_print(f"Could not terminate the instance: {inst_id}")
+#try:
+#    sleep(1)
+#    term_response = ec2_client.terminate_instances(
+#        InstanceIds=[created_instance.id]
+#    )
+#    pretty_print(f"Terminated the instance: {inst_id}")
+#except:
+#    pretty_print(f"Could not terminate the instance: {inst_id}")
 
 # Create the Web App security group
 try:
@@ -1280,6 +1325,7 @@ else:
 # Starts the web app
 auto_user_data = '''
 #!/bin/bash
+INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id);
 su - ec2-user -c 'node app.js'
 '''
 # Create a Launch configuration based on the image
@@ -1611,8 +1657,7 @@ try:
         LaunchConfigurationName="web",
         MinSize=2,
         DesiredCapacity=2,
-        MaxSize=3,
-        DefaultCooldown=60,
+        MaxSize=4,
         HealthCheckType='ELB',
         HealthCheckGracePeriod=60,
         VPCZoneIdentifier=f"{pub_west1a},{pub_west1b},{pub_west1c}",
@@ -1656,7 +1701,7 @@ try:
         Namespace='AWS/EC2',
         Statistic='Average',
         Period=60,
-        EvaluationPeriods=3,
+        EvaluationPeriods=2,
         Threshold=70,
         ComparisonOperator='GreaterThanThreshold',
         AlarmActions=[up_policy_arn]
@@ -1700,7 +1745,7 @@ try:
 except:
     pretty_print(f"Could not create Low CPU Usage Alarm")
 
-sleep(140)
+sleep(180)
 
 # Get instance ids
 find_auto_resp = ec2_client.describe_instances(
@@ -1756,51 +1801,11 @@ result = subproc(
 )
 pretty_print(str(result.stdout))
 
-# Secure copy monitor script onto instance
-subproc(
-    f"scp -o StrictHostKeyChecking=no -i {key_file_name} monitor.sh ec2-user@{inst_1}:.",
-    "Monitor script copied onto ec2 instance",
-    "Monitor script was not copied onto ec2 instance",
-    2,
-)
-
-# Secure copy aws credentials onto instance
-subproc(
-    f"scp -rp -o StrictHostKeyChecking=no -i {key_file_name} ~/.aws ec2-user@{inst_1}:~/",
-    "AWS credentials copied onto ec2 instance",
-    "AWS credentials was not copied onto ec2 instance",
-    2,
-)
-
-# Set monitor permissions
-subproc(
-    f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_1} 'chmod 700 monitor.sh'",
-    "Monitor script permissions set",
-    "Monitor script permissions were not set",
-    2,
-)
-
-# Execute monitor script
-permiss_cmd = f"""ssh -o StrictHostKeyChecking=no -i {key_name}.pem ec2-user@{inst_1} 'echo ------------------------------------------------------;
-echo Executing monitor.sh ; 
-echo ------------------------------------------------------;
-echo                            ; 
-./monitor.sh'
-"""
-subproc(
-    permiss_cmd,
-    "Monitor.sh executed successfully",
-    "Could not execute Monitor.sh",
-    2
-)
-
 # Open Web Browser
 try:
     time.sleep(2)
     webbrowser.open_new_tab(f"http://{lb_dns}")
-    webbrowser.open_new_tab(f"https://{lb_dns}:3000")
     webbrowser.open_new_tab(f"http://{lb_dns}:3000")
-
     pretty_print("Browser opened")
 except:
     pretty_print("Could not open the browser")
