@@ -5,7 +5,7 @@ TCP_CONN=$(netstat -an | wc -l)
 TCP_CONN_PORT_80=$(netstat -an | grep 80 | wc -l)
 TCP_CONN_PORT_3000=$(netstat -an | grep 3000 | wc -l)
 IO_WAIT=$(iostat | awk 'NR==4 {print $4}')
-CPU_USAGE=$(top -bn1 | grep load | awk '{printf "CPU Usage: %.2f\n", $(NF-2)}')
+CPU_USAGE=$(top -bn1 | grep load | awk '{printf "%.2f\n", $(NF-2)}')
 PROCCESSCOUNT=$(ps -e | wc -l)
 overload=0
 if [[ $IO_WAIT > 70 && $USEDMEMORY > 80 ]]

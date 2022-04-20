@@ -926,8 +926,8 @@ while result.returncode != 0:
 
 # SSH into instance and install the web app
 command_list = '''
-sudo yum update -y ; curl -o- https://raw.githubusercontent.com/creationix/nvm/v0.37.1/install.sh | bash;
-. ~/.nvm/nvm.sh; nvm install node; nvm install --lts; curl https://witdevops.s3-eu-west-1.amazonaws.com/app.js --output app.js;
+sudo yum update -y ; curl -sL https://rpm.nodesource.com/setup_16.x | sudo -E bash - ;
+sudo yum install -y nodejs ; curl https://witdevops.s3-eu-west-1.amazonaws.com/app.js --output app.js;
 '''
 ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '{command_list}'"
 result = subproc(
@@ -962,9 +962,16 @@ subproc(
     2,
 )
 
+subproc(
+    f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} 'sudo cp monitor.sh /var/www/html/monitor.sh; sudo cp -R ~/.aws /var/www/html/'",
+    "Monitor script copied",
+    "Monitor script not copied",
+    2,
+)
+
+
 # Execute monitor script
-permiss_cmd = f"""ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '(crontab -l ; echo "*/1 * * * * /home/ec2-user/monitor.sh") | crontab -'
-"""
+permiss_cmd = f"""ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} '(crontab -l ; echo "*/1 * * * * /home/ec2-user/monitor.sh") | crontab -' """
 subproc(
     permiss_cmd,
     "Cronjob created for Monitor.sh",
@@ -1318,9 +1325,27 @@ else:
 auto_user_data = '''
 #!/bin/bash
 INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id);
-(crontab -l ; echo "*/1 * * * * /home/ec2-user/monitor.sh") | crontab -;
+USEDMEMORY=$(free -m | awk 'NR==2{printf "%.2f\t", $3*100/$2 }');
+TCP_CONN=$(netstat -an | wc -l);
+TCP_CONN_PORT_80=$(netstat -an | grep 80 | wc -l);
+USERS=$(uptime |awk '{ print $5 }');
+IO_WAIT=$(iostat | awk 'NR==4 {print $5}') ;
+
+aws cloudwatch put-metric-data --metric-name memory-usage --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $USEDMEMORY;
+aws cloudwatch put-metric-data --metric-name Tcp_connections --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $TCP_CONN;
+aws cloudwatch put-metric-data --metric-name TCP_connection_on_port_80 --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $TCP_CONN_PORT_80;
+aws cloudwatch put-metric-data --metric-name No_of_users --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $USERS;
+aws cloudwatch put-metric-data --metric-name IO_WAIT --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $IO_WAIT;
+(crontab -l ; sudo echo "*/1 * * * * /home/ec2-user/monitor.sh") | crontab -;
 su - ec2-user -c 'node app.js'
 '''
+# #INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id);
+#sudo cp /var/www/html/monitor.sh ~;
+#sudo cp -R /var/www/html/.aws ~;
+#(crontab -l ; echo "*/1 * * * * /home/root/monitor.sh") | crontab -;
+# sudo cp /var/www/html/monitor.sh ~;
+# sudo cp -R /var/www/html/.aws ~;
+# 
 # Create a Launch configuration based on the image
 try:
     sleep(1)
@@ -1540,7 +1565,7 @@ openssl \
   req \
   -newkey rsa:2048 -nodes \
   -keyout privkey.pem \
-  -x509 -days 36500 -out certificate.pem \
+  -x509 -days 36500 -out certificate.csr \
   -subj "/C=IE/ST=WX/L=Earth/O=WIT/OU=SSD/CN={lb_dns}"
 '''
 # Installs OpenSSL
@@ -1562,7 +1587,7 @@ subproc(
 # Convert the cert to bytes
 try:
     sleep(1)
-    with open("certificate.pem", "r") as cert:
+    with open("certificate.csr", "r") as cert:
         content = cert.read()
         b_cert = bytes(content, 'utf-8')
         pretty_print("Certificate converted to bytes")
@@ -1650,9 +1675,8 @@ try:
         LaunchConfigurationName="web",
         MinSize=2,
         DesiredCapacity=2,
-        MaxSize=4,
-        HealthCheckType='ELB',
-        HealthCheckGracePeriod=60,
+        MaxSize=3,
+        HealthCheckGracePeriod=120,
         VPCZoneIdentifier=f"{pub_west1a},{pub_west1b},{pub_west1c}",
         TargetGroupARNs=[http_arn, port3000_arn, https_arn],
         Tags=[
@@ -1674,9 +1698,8 @@ try:
     up_policy_resp = auto_client.put_scaling_policy(
         AutoScalingGroupName="ASG1",
         PolicyName="scale-out",
-        PolicyType="StepScaling",
+        PolicyType="SimpleScaling",
         AdjustmentType="ChangeInCapacity",
-        Cooldown=120,
         ScalingAdjustment=1
     )
     up_policy_arn = up_policy_resp['PolicyARN']
@@ -1695,7 +1718,7 @@ try:
         Statistic='Average',
         Period=60,
         EvaluationPeriods=2,
-        Threshold=60,
+        Threshold=50,
         ComparisonOperator='GreaterThanThreshold',
         AlarmActions=[up_policy_arn]
     )
@@ -1709,10 +1732,9 @@ try:
     lo_policy_resp = auto_client.put_scaling_policy(
         AutoScalingGroupName="ASG1",
         PolicyName="scale-in",
-        PolicyType="StepScaling",
+        PolicyType="SimpleScaling",
         AdjustmentType="ChangeInCapacity",
-        Cooldown=120,
-        ScalingAdjustment=-1
+        ScalingAdjustment=-1,
     )
     lo_policy_arn = lo_policy_resp['PolicyARN']
     pretty_print(f"Created Scale-In Policy: {lo_policy_arn}")
@@ -1738,7 +1760,7 @@ try:
 except:
     pretty_print(f"Could not create Low CPU Usage Alarm")
 
-sleep(180)
+sleep(120)
 
 # Get instance ids
 find_auto_resp = ec2_client.describe_instances(
@@ -1751,6 +1773,7 @@ find_auto_resp = ec2_client.describe_instances(
 )
 
 inst_1= find_auto_resp['Reservations'][0]['Instances'][0]['PublicIpAddress']
+inst_1_id= find_auto_resp['Reservations'][0]['Instances'][0]['InstanceId']
 inst_2= find_auto_resp['Reservations'][1]['Instances'][0]['PublicIpAddress']
 pretty_print(inst_1)
 pretty_print(inst_2)
