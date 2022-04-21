@@ -898,9 +898,22 @@ subproc(
     2,
 )
 
+#Associate iam profile
+try:
+    response = ec2_client.associate_iam_instance_profile(
+        IamInstanceProfile={
+            'Arn': 'arn:aws:iam::778769697098:instance-profile/EC2IAM',
+            'Name': 'EC2IAM'
+        },
+        InstanceId=inst_id
+    )
+    pretty_print("Associated Iam profile with the template instance")
+except:
+    pretty_print("Could not associate Iam profile with the template instance")
+
 # SSH into instance and install the web app
 command_list = '''
-sudo yum install httpd -y; sudo systemctl enable httpd; sudo systemctl start httpd;
+sudo yum install httpd -y; sudo systemctl enable httpd; sudo systemctl start httpd; sudo service crond start;
 sudo touch index.html; sudo chmod 777 index.html; sudo echo "<b>Assignment Two Index</b> " >> index.html;
 sudo cp index.html /var/www/html/index.html; sudo chmod 755 -R /var/www;
 '''
@@ -962,8 +975,9 @@ subproc(
     2,
 )
 
+#sudo cp -R ~/.aws /var/www/html/'
 subproc(
-    f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} 'sudo cp monitor.sh /var/www/html/monitor.sh; sudo cp -R ~/.aws /var/www/html/'",
+    f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{public_ip} 'sudo cp monitor.sh /var/www/html/monitor.sh' ",
     "Monitor script copied",
     "Monitor script not copied",
     2,
@@ -1324,34 +1338,31 @@ else:
 # Starts the web app
 auto_user_data = '''
 #!/bin/bash
-INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id);
-USEDMEMORY=$(free -m | awk 'NR==2{printf "%.2f\t", $3*100/$2 }');
-TCP_CONN=$(netstat -an | wc -l);
-TCP_CONN_PORT_80=$(netstat -an | grep 80 | wc -l);
-USERS=$(uptime |awk '{ print $5 }');
-IO_WAIT=$(iostat | awk 'NR==4 {print $5}') ;
-
-aws cloudwatch put-metric-data --metric-name memory-usage --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $USEDMEMORY;
-aws cloudwatch put-metric-data --metric-name Tcp_connections --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $TCP_CONN;
-aws cloudwatch put-metric-data --metric-name TCP_connection_on_port_80 --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $TCP_CONN_PORT_80;
-aws cloudwatch put-metric-data --metric-name No_of_users --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $USERS;
-aws cloudwatch put-metric-data --metric-name IO_WAIT --dimensions Instance=$INSTANCE_ID --namespace "Custom" --value $IO_WAIT;
+sudo service crond start;
+sudo cp /var/www/html/monitor.sh /home/ec2-user/monitor.sh;
 (crontab -l ; sudo echo "*/1 * * * * /home/ec2-user/monitor.sh") | crontab -;
 su - ec2-user -c 'node app.js'
 '''
 # #INSTANCE_ID=$(curl -s http://169.254.169.254/latest/meta-data/instance-id);
-#sudo cp /var/www/html/monitor.sh ~;
+#
 #sudo cp -R /var/www/html/.aws ~;
 #(crontab -l ; echo "*/1 * * * * /home/root/monitor.sh") | crontab -;
 # sudo cp /var/www/html/monitor.sh ~;
 # sudo cp -R /var/www/html/.aws ~;
 # 
+
+
+#Create role, ec2 use case
+#attach ec2 full access permission policy
+#modify ec2 instance role
+
 # Create a Launch configuration based on the image
 try:
     sleep(1)
     launch_response = auto_client.create_launch_configuration(
         LaunchConfigurationName='web',
         ImageId=image_id,
+        IamInstanceProfile='arn:aws:iam::778769697098:instance-profile/EC2IAM',
         KeyName=key_name,
         SecurityGroups=[web_grp_id[0]],
         UserData=auto_user_data,
