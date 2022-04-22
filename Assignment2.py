@@ -1352,10 +1352,6 @@ su - ec2-user -c 'node app.js'
 # 
 
 
-#Create role, ec2 use case
-#attach ec2 full access permission policy
-#modify ec2 instance role
-
 # Create a Launch configuration based on the image
 try:
     sleep(1)
@@ -1728,8 +1724,8 @@ try:
         Namespace='AWS/EC2',
         Statistic='Average',
         Period=60,
-        EvaluationPeriods=2,
-        Threshold=50,
+        EvaluationPeriods=1,
+        Threshold=65,
         ComparisonOperator='GreaterThanThreshold',
         AlarmActions=[up_policy_arn]
     )
@@ -1762,8 +1758,8 @@ try:
         Namespace='AWS/EC2',
         Statistic='Average',
         Period=60,
-        EvaluationPeriods=2,
-        Threshold=25,
+        EvaluationPeriods=1,
+        Threshold=40,
         ComparisonOperator='LessThanThreshold',
         AlarmActions=[lo_policy_arn]
     )
@@ -1836,3 +1832,17 @@ try:
     pretty_print("Browser opened")
 except:
     pretty_print("Could not open the browser")
+
+
+ssh_command = f"ssh -o StrictHostKeyChecking=no -i {key_file_name} ec2-user@{inst_1} 'while true; do x=0; done'"
+# Overload CPU
+result = subproc(
+    ssh_command,
+    f"Overloading {inst_1} CPU to force autoscale",
+    "Could not overload the CPU",
+    2,
+    True
+)
+
+
+
