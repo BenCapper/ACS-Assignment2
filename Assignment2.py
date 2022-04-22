@@ -1725,7 +1725,7 @@ try:
         Statistic='Average',
         Period=60,
         EvaluationPeriods=1,
-        Threshold=65,
+        Threshold=50,
         ComparisonOperator='GreaterThanThreshold',
         AlarmActions=[up_policy_arn]
     )
@@ -1758,7 +1758,7 @@ try:
         Namespace='AWS/EC2',
         Statistic='Average',
         Period=60,
-        EvaluationPeriods=1,
+        EvaluationPeriods=2,
         Threshold=40,
         ComparisonOperator='LessThanThreshold',
         AlarmActions=[lo_policy_arn]
